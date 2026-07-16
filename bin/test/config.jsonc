@@ -1,0 +1,158 @@
+{
+    // ==================== 基础信息 ====================
+    // task_info里面的字段可以作为魔法变量，用于渲染出真正的server cmd和client cmd。此时就需要保证命令中的待填充变量名和字段名相同
+    "modelName": "JoyAI",
+    "task_info":{
+        "modelName": "JoyAI",
+        "modelPath": "/metax0402/models/jd-opensource/JoyAI-LLM-Flash",
+        "tp": 4,
+        "port": 1136
+    },
+    
+    // 默认的命令，当任务类型不提供补充信息或者覆盖信息时，使用该默认命令来处理任务，默认命令是必须要提供的
+    "server": {
+        "cmd": "vllm serve {modelPath} --trust-remote-code --gpu-memory-utilization 0.9 -tp 4 --port {port} --no-enable-prefix-caching --tool-call-parser qwen3_coder --enable-auto-tool-choice --max-num-batched-tokens 8192",
+        "env": {
+            "MACA_VLLM_ENABLE_MCTLASS_FUSED_MOE": 1,
+            "MACA_VLLM_ENABLE_MCTLASS_PYTHON_API": 1,
+            "MACA_SMALL_PAGESIZE_ENABLE":1,
+            "MACA_DIRECT_DISPATCH": 1,
+            "CUDA_VISIBLE_DEVICES": "0,1,2,3"
+        }
+    },
+
+    "client": {
+        "cmd": "vllm bench serve --model {modelPath} --port {port} --dataset_name random --random-input-len {input} --random-output-len {output} --num-prompts {prompts} --trust-remote-code --max-concurrency {bs} --ignore-eos --backend openai-chat --endpoint /v1/chat/completions",
+        "env": {}
+    },
+
+    // ==================== E2E 任务 ====================
+    "E2E": {
+        "bs_in_out": [
+            [1, 100, 10],
+            [4, 100, 10]
+        ],
+
+        "server": {
+            // cmd字段如果提供就会覆盖默认的命令
+            "cmd": null,
+            "env": {},
+            "extra_args": []
+        },
+
+        "client": {
+            "cmd": null,
+            "env": {},
+            "extra_args": ["--num-prompts", "$(({bs} * 10))"]
+        }
+    },
+
+    // ==================== Profiler 任务（非 E2E，使用 Pair 模式） ====================
+    "Profiler": {
+        "bs_in_out": [
+            [4, 1000, 16],
+            [4, 2500, 16],
+            [4, 9000, 16],
+            [4, 20000, 16]
+        ],
+
+        "server": {
+            "cmd": null,
+            "env": {},
+            "extra_args": [
+                "--profiler-config", "'{{\"profiler\":\"torch\", \"torch_profiler_dir\": \"{__LOG_PATH__}/{modelName}-tp{tp}-bs{bs}-in{input}-out{output}\"}}'"
+            ]
+        },
+
+        "client": {
+            "cmd": null,
+            "env": {},
+            "warmup": true,
+            "extra_args": ["--profile"]
+        }
+    },
+
+
+    "TlasShape": {
+        "bs_in_out": [
+            [1, 1000, 16],
+            [1, 2500, 16],
+            [1, 9000, 16],
+            [1, 20000, 16],
+            [4, 1000, 16],
+            [4, 2500, 16],
+            [4, 9000, 16],
+            [4, 20000, 16]
+        ],
+
+        "server": {
+            "cmd": null,
+            "env": {
+                "MACA_LAUNCH_BLOCKING": 1,
+                "MCTLASS_LOG_ENABLE": "ON",
+                "MXLOG_LEVEL": "err,MCTLASSEX=debug"
+            },
+            "extra_args": ["--enforce-eager"]
+        },
+
+        "client": {
+            "cmd": null,
+            "env": {},
+            "extra_args": []
+        }
+    },
+
+    "BlasShape": {
+        "bs_in_out": [
+            [1, 1000, 16],
+            [1, 2500, 16],
+            [1, 9000, 16],
+            [1, 20000, 16],
+            [4, 1000, 16],
+            [4, 2500, 16],
+            [4, 9000, 16],
+            [4, 20000, 16]
+        ],
+
+        "server": {
+            "cmd": null,
+            "env": {
+                "MACA_LAUNCH_BLOCKING": 1,
+                "MXLOG_LEVEL": "err,MCBLAS=info,MCBLASLT=info"
+            },
+            "extra_args": ["--enforce-eager"]
+        },
+
+        "client": {
+            "cmd": null,
+            "env": {},
+            "extra_args": []
+        }
+    },
+
+    "FlashAttnShape": {
+        "bs_in_out": [
+            [4, 1000, 16],
+            [4, 2500, 16],
+            [4, 9000, 16],
+            [4, 20000, 16]
+        ],
+
+        "server": {
+            "cmd": null,
+            "env": {
+                "MACA_LAUNCH_BLOCKING": 1,
+                "MHA_LOG_ENABLE": 1,
+                "MHA_PRINT_PARA": "ON",
+                "MHA_INPUT_COLLECTION": "{__LOG_PATH__}/{modelName}-tp{tp}-bs{bs}-in{input}-out{output}"
+            },
+            "extra_args": ["--enforce-eager"]
+        },
+
+        "client": {
+            "cmd": null,
+            "env": {},
+            "extra_args": []
+        }
+    }
+}
