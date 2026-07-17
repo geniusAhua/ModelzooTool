@@ -1,16 +1,16 @@
 {
     // ==================== 基础信息 ====================
     // task_info里面的字段可以作为魔法变量，用于渲染出真正的server cmd和client cmd。此时就需要保证命令中的待填充变量名和字段名相同
-    "modelName": "JoyAI",
-    "modelPath": "/metax0402/models/jd-opensource/JoyAI-LLM-Flash",
+    "modelPath": "/metax0402/models/google/gemma-4-31B-it",
     "task_info":{
         "tp": 4,
-        "port": 1136
+        "chunk_size": 8,
+        "port": 4567
     },
     
     // 默认的命令，当任务类型不提供补充信息或者覆盖信息时，使用该默认命令来处理任务，默认命令是必须要提供的
     "server": {
-        "cmd": "vllm serve {modelPath} --trust-remote-code --gpu-memory-utilization 0.9 -tp 4 --port {port} --no-enable-prefix-caching --tool-call-parser qwen3_coder --enable-auto-tool-choice --max-num-batched-tokens 8192",
+        "cmd": "vllm serve {modelPath} --trust-remote-code --gpu-memory-utilization 0.9 -tp {tp} --port {port} --attention-backend FLASH_ATTN --max-num-batched-tokens $(({chunk_size} * 1024))",
         "env": {
             "MACA_VLLM_ENABLE_MCTLASS_FUSED_MOE": 1,
             "MACA_VLLM_ENABLE_MCTLASS_PYTHON_API": 1,
@@ -28,8 +28,7 @@
     // ==================== E2E 任务 ====================
     "E2E": {
         "bs_in_out": [
-            [1, 100, 10],
-            [4, 100, 10]
+            [0, 0, 0]
         ],
 
         "server": {
@@ -40,26 +39,26 @@
         },
 
         "client": {
-            "cmd": null,
+            "cmd": "python /metax0402/m01088/Gemma4/jd_find_best_case.py -p {port} --cache --log-path {__LOG_PATH__}",
             "env": {},
-            "extra_args": ["--num-prompts", "$(({bs} * 10))"]
+            "extra_args": []
         }
     },
 
     // ==================== Profiler 任务（非 E2E，使用 Pair 模式） ====================
     "Profiler": {
         "bs_in_out": [
-            [4, 1000, 16],
+            [1, 2500, 16],
+            [1, 3500, 16],
             [4, 2500, 16],
-            [4, 9000, 16],
-            [4, 20000, 16]
+            [4, 3500, 16]
         ],
 
         "server": {
             "cmd": null,
             "env": {},
             "extra_args": [
-                "--profiler-config", "'{{\"profiler\":\"torch\", \"torch_profiler_dir\": \"{__LOG_PATH__}/{modelName}-tp{tp}-bs{bs}-in{input}-out{output}\"}}'"
+                "--no-enable-prefix-caching", "--profiler-config", "'{{\"profiler\":\"torch\", \"torch_profiler_dir\": \"{__LOG_PATH__}/{modelName}-tp{tp}-bs{bs}-in{input}-out{output}\"}}'"
             ]
         },
 
@@ -74,14 +73,10 @@
 
     "TlasShape": {
         "bs_in_out": [
-            [1, 1000, 16],
             [1, 2500, 16],
-            [1, 9000, 16],
-            [1, 20000, 16],
-            [4, 1000, 16],
+            [1, 3500, 16],
             [4, 2500, 16],
-            [4, 9000, 16],
-            [4, 20000, 16]
+            [4, 3500, 16]
         ],
 
         "server": {
@@ -91,7 +86,7 @@
                 "MCTLASS_LOG_ENABLE": "ON",
                 "MXLOG_LEVEL": "err,MCTLASSEX=debug"
             },
-            "extra_args": ["--enforce-eager"]
+            "extra_args": ["--no-enable-prefix-caching", "--enforce-eager"]
         },
 
         "client": {
@@ -103,14 +98,10 @@
 
     "BlasShape": {
         "bs_in_out": [
-            [1, 1000, 16],
             [1, 2500, 16],
-            [1, 9000, 16],
-            [1, 20000, 16],
-            [4, 1000, 16],
+            [1, 3500, 16],
             [4, 2500, 16],
-            [4, 9000, 16],
-            [4, 20000, 16]
+            [4, 3500, 16]
         ],
 
         "server": {
@@ -119,7 +110,7 @@
                 "MACA_LAUNCH_BLOCKING": 1,
                 "MXLOG_LEVEL": "err,MCBLAS=info,MCBLASLT=info"
             },
-            "extra_args": ["--enforce-eager"]
+            "extra_args": ["--no-enable-prefix-caching", "--enforce-eager"]
         },
 
         "client": {
@@ -131,10 +122,10 @@
 
     "FlashAttnShape": {
         "bs_in_out": [
-            [4, 1000, 16],
+            [1, 2500, 16],
+            [1, 3500, 16],
             [4, 2500, 16],
-            [4, 9000, 16],
-            [4, 20000, 16]
+            [4, 3500, 16]
         ],
 
         "server": {
@@ -145,7 +136,7 @@
                 "MHA_PRINT_PARA": "ON",
                 "MHA_INPUT_COLLECTION": "{__LOG_PATH__}/{modelName}-tp{tp}-bs{bs}-in{input}-out{output}"
             },
-            "extra_args": ["--enforce-eager"]
+            "extra_args": ["--no-enable-prefix-caching", "--enforce-eager"]
         },
 
         "client": {
