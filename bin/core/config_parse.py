@@ -149,7 +149,7 @@ class _Config:
             return
 
         # ==================== 基础字段 ====================
-        self.modelName: str = ""
+        self.fileName: str = ""
         self.task_info: Dict[str, Any] = {}
         self.default_server: Dict[str, Any] = {}
         self.default_client: Dict[str, Any] = {}
@@ -164,6 +164,9 @@ class _Config:
         config_path = config_path.resolve()
         if not config_path.exists():
             raise FileNotFoundError(f"配置文件不存在: {config_path}")
+        
+        # 初始化文件名称信息
+        self.fileName = config_path.stem
 
         with open(config_path, 'r', encoding='utf-8') as f:
             self._raw_data: Dict[str, Any] = json5.loads(f.read())
@@ -176,8 +179,7 @@ class _Config:
     def _parse(self):
         data = self._raw_data
 
-        self.modelName = data.get("modelName")
-
+        self.modelPath = data.get("modelPath")
         # task_info
         self.task_info = data.get("task_info", {})
 

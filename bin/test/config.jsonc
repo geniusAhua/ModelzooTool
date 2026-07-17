@@ -2,9 +2,8 @@
     // ==================== 基础信息 ====================
     // task_info里面的字段可以作为魔法变量，用于渲染出真正的server cmd和client cmd。此时就需要保证命令中的待填充变量名和字段名相同
     "modelName": "JoyAI",
+    "modelPath": "/metax0402/models/jd-opensource/JoyAI-LLM-Flash",
     "task_info":{
-        "modelName": "JoyAI",
-        "modelPath": "/metax0402/models/jd-opensource/JoyAI-LLM-Flash",
         "tp": 4,
         "port": 1136
     },
