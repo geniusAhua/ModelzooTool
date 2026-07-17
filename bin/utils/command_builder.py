@@ -26,6 +26,9 @@ class CommandBuilder:
             "output": str(output_len),
         })
 
+        context["__FILE_NAME__"] = str(self.config.fileName)
+        context["modelPath"] = str(self.config.modelPath)
+
         context["__LOG_PATH__"] = str(log_path)
 
         prompt_ratio = self.config.task_info.get("promptRatio", 1)
