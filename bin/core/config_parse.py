@@ -162,6 +162,7 @@ class _Config:
             config_path = Path(configPath)
 
         config_path = config_path.resolve()
+        print(f"config_path: {config_path}", flush=True)
         if not config_path.exists():
             raise FileNotFoundError(f"配置文件不存在: {config_path}")
         
