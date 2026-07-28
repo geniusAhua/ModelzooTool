@@ -45,15 +45,14 @@ def extract_batch_size(parsed: dict) -> int | None:
     return None
 
 
-def display_dynamic_table(result_dict: dict, model_name: str, output_file: str):
+def display_dynamic_table(result_list: list, model_name: str, output_file: str):
     """动态 Rich 表格 + CSV（使用同一数据源）"""
-    if not result_dict:
+    if not result_list:
         console.print("[red]没有可展示的数据[/red]")
         return
 
-    # 1. 构建 DataFrame（不把 tuple key 当成列）
-    df = pd.DataFrame.from_dict(result_dict, orient="index")
-    df = df.reset_index(drop=True)   # 关键：丢弃 tuple key，避免污染 CSV
+    # 1. 构建 DataFrame
+    df = pd.DataFrame(result_list)
 
     # 2. 把 Batch Size、Input Len、Output Len 放到最前面
     priority_cols = ["Batch Size", "Input Len", "Output Len"]
@@ -89,47 +88,6 @@ def display_dynamic_table(result_dict: dict, model_name: str, output_file: str):
     df.to_csv(output_file, index=False, encoding="utf-8-sig")
     console.print(f"\n[green]结果已保存到: {output_file}[/green]")
 
-# def display_dynamic_table(result_dict: dict, model_name: str, output_file: str):
-#     """动态 Rich 表格 + CSV（使用同一数据源）"""
-#     if not result_dict:
-#         console.print("[red]没有可展示的数据[/red]")
-#         return
-# 
-#     # 收集所有字段
-#     all_fields = set()
-#     for data in result_dict.values():
-#         all_fields.update(data.keys())
-# 
-#     table = Table(
-#         title=f"Benchmark Result - {model_name}",
-#         box=box.SIMPLE_HEAVY,
-#         expand=True,
-#         show_header=True,
-#         header_style="bold cyan",
-#         padding=(0, 1),
-#     )
-# 
-#     for field in all_fields:
-#         table.add_column(field, justify="right")
-# 
-#     for test_case, values in result_dict.items():
-#         row = []
-#         for field in all_fields:
-#             val = values.get(field, "N/A")
-#             if isinstance(val, float):
-#                 row.append(f"{val:.2f}")
-#             else:
-#                 row.append(str(val))
-#         table.add_row(*row)
-# 
-#     console.print(table)
-# 
-#     # CSV 与终端使用同一数据
-#     df = pd.DataFrame.from_dict(result_dict, orient="index")
-#     df.index.name = "Test Case"
-#     df.to_csv(output_file, encoding="utf-8-sig")
-#     console.print(f"\n[green]结果已保存到: {output_file}[/green]")
-
 
 def main():
     parser = argparse.ArgumentParser(description="vLLM Benchmark Log Parser")
@@ -146,10 +104,11 @@ def main():
     with open(input_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
-    all_results = {}          # key: (bs, input_len, output_len)
+    all_results = []          # 改为 list，保留每一次 case
     current_input_len = None
     current_output_len = None
     result_start = -1
+    JD_bs = None
 
     for idx, line in enumerate(lines):
         if "Traffic request rate:" in line:
@@ -177,8 +136,6 @@ def main():
                 
                 bs = int(out_bs or JD_bs)
 
-                key = (bs, current_input_len, current_output_len)
-
                 # 构建当前 case 数据
                 case_data = {}
                 case_data["Batch Size"] = bs
@@ -191,51 +148,15 @@ def main():
                     except:
                         case_data[k] = v
 
-                
-
-                # 如果 key 已存在则合并（后续取平均）
-                if key not in all_results:
-                    all_results[key] = {"_raw_list": []}
-
-                all_results[key]["_raw_list"].append(case_data)
+                # 直接保留每一次的结果，不再合并/取平均
+                all_results.append(case_data)
 
             result_start = -1
             current_input_len = None
             current_output_len = None
             JD_bs = None
 
-    # 对重复 key 取平均
-    final_results = {}
-    for key, data in all_results.items():
-        raw_list = data["_raw_list"]
-        if not raw_list:
-            continue
-
-        # 合并所有数值字段
-        merged = {}
-        for case in raw_list:
-            for k, v in case.items():
-                if k == "_raw_list":
-                    continue
-                if k not in merged:
-                    merged[k] = []
-                merged[k].append(v)
-
-        # 取平均
-        averaged = {}
-        for k, vlist in merged.items():
-            if isinstance(vlist[0], (int, float)):
-                mean_val = np.mean(vlist)
-                if isinstance(vlist[0], int):
-                    averaged[k] = int(mean_val)   # 关键修改
-                else:
-                    averaged[k] = mean_val
-            else:
-                averaged[k] = vlist[0]
-
-        final_results[key] = averaged
-
-    display_dynamic_table(final_results, model_name, str(output_path))
+    display_dynamic_table(all_results, model_name, str(output_path))
 
 
 if __name__ == "__main__":

@@ -75,8 +75,7 @@ class ModelzooProcess():
 
     def _log_worker(self):
         with open(self._log_path, self._log_mod, encoding="utf-8") as f:
-            f.write("\n")
-            f.write(f"run: {self._cmd}")
+            f.write(f"run: {self._cmd}\n")
             for line in self._proc.stdout:
                 f.write(line)
                 f.flush()
