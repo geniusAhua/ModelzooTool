@@ -4,7 +4,8 @@
 通过--help查看命令帮助
 
 `-E`会启动端到端测试，该测试仅启动一次server，然后遍历提供的case，串行启动client
-其余类型的任务，server和client是成对调度，每一个case都对应一对server命令和client命令
+
+其余类型的任务，server和client是成对调度，每一个case都对应一对server命令和client命令, `-ptfb` 表示执行profile，tlas， flash attn，blas
 
 ## config.json
 `task_info`中是自定义魔法变量，可在 命令/环境变量/额外参数 中，通过 `{}` 包起来使用对应的魔法变量值
@@ -14,7 +15,7 @@
 2. `__FILE_NAME__`
     当前作业的配置文件名称
 3. `bs, input, output`
-    当前case对应的bs，input，output。由于必须提供case才能启动client，如果client不需要这些参数值，也可以设置一个无意义的值用于占位来正常启动client
+    当前case对应的bs，input，output。由于必须提供case才能启动client，如果**client不需要这些参数值**，也可以设置一个**无意义的值**用于**占位**来正常启动client
 
 ```jsonc
 //举例
@@ -193,11 +194,10 @@
 推荐的执行脚本如下：
 ```bash
 # user `id -u` to get your user_id
+# set -x
+
 uid=
 user=
-
-platform=$1
-: "${platform:?ERROR: 该脚本需要一个参数 platform 不能为空}"
 
 if id "$user" &>/dev/null; then
     echo "用户 $user 已存在，跳过创建"
@@ -206,11 +206,47 @@ else
     usermod -aG video,root ${user}
 fi
 
-pip install vllm==0.11.0 pandas datasets json5 decord
 
-su - ${user} << EOF
-    mkdir -p /home/${user}/.cache/huggingface/modules/transformers_modules/
-    cp /mxstorage/pde_ai/models/llm/ERNIE/ERNIE-4.5-VL-28B-A3B-Thinking/Roboto-Regular.ttf /home/${user}/.cache/huggingface/modules/transformers_modules/
-    python /sw_home/${user}/scripts/ModelzooTool/bin/main.py --config /sw_home/${user}/scripts/modelzooTask/jiyun/ERNIE-4.5-VL-28B-A3B/ERNIE-4_5-VL-28B.jsonc -E -o /sw_home/${user}/scripts/modelzooTask/jiyun/ERNIE-4.5-VL-28B-A3B/${platform}/
+configs=(
+    # config path
+)
+
+SCRIPT="${ModelzooTool_entry_PATH}"
+LOG_DIR="${LOG_DIR}"
+
+# pip source
+pip3 config set global.index-url https://repo.metax-tech.com/r/pypi/simple
+pip3 config set install.trusted-host repo.metax-tech.com
+python -c "import json5" 2>/dev/null || pip install json5
+# dependence
+# pip uninstall transformers -y
+# pip install transformers==5.6.0
+
+
+cmd=""
+for config in "${configs[@]}"; do
+    cmd+="echo \">>> 开始执行: $config\""$'\n'
+    # main execution, change the arg for your own project
+    cmd+="python \"$SCRIPT\" --config \"$config\" -E -o \"$LOG_DIR\""$'\n'
+    cmd+="echo \">>> 完成: $config\""$'\n'
+    cmd+="echo \"----------------------------------------\""$'\n'
+done
+
+# 再传给 su
+su - "${user}" << EOF
+    if [ -n "$CUDA_VISIBLE_DEVICES" ]; then
+        export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
+    fi
+
+    if true; then
+        export MACA_PATH=/opt/maca
+        export LD_LIBRARY_PATH=/opt/mxdriver/lib:${MACA_PATH}/lib:${MACA_PATH}/ompi/lib:${MACA_PATH}/mxgpu_llvm/lib:${LD_LIBRARY_PATH}
+        export PATH=${MACA_PATH}/bin/:$PATH
+    fi
+
+    if true; then
+        $cmd
+        echo "所有任务执行完毕！"
+    fi
 EOF
 ```
