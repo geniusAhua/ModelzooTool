@@ -58,7 +58,7 @@ def clean_triton_cache():
             print(f"  成功")
         else:
             print(f"  失败: {result.stderr.strip() or '无输出'}")
-    
+
     print(" Triton 缓存目录，清理完成")
 
 
@@ -75,7 +75,7 @@ client_p: 'Process' = None
 #         print(f" Server日志 → {server_log}")
 #         print(f" Client日志 → {client_log}")
 #         print(f"{'-'*100}")
-#         
+#
 #         server_runner = ServerProc(server_cmd, env, ready_event, error_event, server_log)
 #         client_runner = ClientProc(client_cmd, env, ready_event, error_event, client_log)
 #         # 启动两个独立进程
@@ -86,36 +86,36 @@ client_p: 'Process' = None
 #                 daemon=True
 #             )
 #             server_p.start()
-#         
+#
 #         client_p = Process(
 #             target=client_runner.start,
 #             daemon=True
 #         )
 #         client_p.start()
-# 
+#
 #         while True:
 #             if error_event.is_set():
 #                 print(" Server Error, 请检查 Server 命令, 后续任务将会停止")
 #                 client_p.terminate()
 #                 client_p.join(timeout=5) or client_p.kill()
 #                 return False
-#             
+#
 #             if ready_event.is_set():
 #                 break
-# 
+#
 #             if server_cmd and not server_p.is_alive() and not ready_event.is_set():
 #                 # Server 死了但没发 ready → 肯定是异常
 #                 print("Server 意外终止！")
 #                 error_event.set()
 #                 continue
-# 
+#
 #             time.sleep(1)
-# 
+#
 #         # 主进程等待 client 结束
 #         client_p.join()
 #         returncode = client_p.exitcode
 #         client_p = None
-# 
+#
 #         # client 结束后，杀掉 server
 #         # 在 start_modelzoo 函数最后增加判断
 #         if is_pair_mode and server_cmd and server_p and server_p.is_alive():
@@ -134,7 +134,7 @@ client_p: 'Process' = None
 #         #         print(f"在终止 Server 进程时出现了问题: {e}")
 #         #     server_p.join()
 #         #     server_p = None
-# 
+#
 #         success = (returncode == 0)
 #         return success
 #     except KeyboardInterrupt:
@@ -278,41 +278,41 @@ def render_magic(template_obj: "list[str, dict]", **kwargs):
 READY_LOG  = "Application startup complete"
 # def run_task(taskNName: "str", out_dir: "Path") -> "bool":
 #     config = _Config()
-# 
+#
 #     tp_size = config.tp
 #     port = config.port
 #     server_cmd_base = config.server_cmd
 #     client_cmd_base = config.client_cmd
 #     model_name = config.modelName
 #     model_path = config.modlePath
-# 
+#
 #     taskConfig = TASKS[taskNName]
 #     env_vars = taskConfig.get("ENV", None)
 #     task_name = taskConfig["TASK"]
-#     
+#
 #     task_env = None
 #     timestamp = time.strftime("%Y%m%d_%H_%M")
-# 
+#
 #     # 同一类同一批任务的时间戳应当相同
 #     log_dir = out_dir / f"{model_name}-{task_name}" / f"{timestamp}"
 #     log_dir.mkdir(parents=True, exist_ok=True)
-# 
+#
 #     bs_in_out_list = config[task_name]["bs_in_out"]
-#     
+#
 #     # TritonDump需要先清理缓存避免无法找到dumpKernel
 #     if task_name == "TritonDump":
 #         clean_triton_cache()
-# 
+#
 #     # 若端到端未配置cases，则默认用户提供了自定义的脚本执行
 #     if not any(bs_in_out_list):
-# 
+#
 #         log_file_name = f"{model_name}-{task_name}-{{role}}-customize.log"
 #         log_file_pattern = str(log_dir / log_file_name)
-# 
+#
 #         env = {**os.environ}
 #         server_cmd = render_magic(server_cmd_base, modelPath = model_path, tp = tp_size, port = port)
 #         client_cmd = render_magic(client_cmd_base, modelPath = model_path, tp = tp_size, port = port)
-# 
+#
 #         print(f"\n{'='*100}")
 #         print(f" 执行任务 [{task_name}] | Case: 用户自定义 Client |")
 #         print(f" 环境变量: {task_env} ")
@@ -320,40 +320,40 @@ READY_LOG  = "Application startup complete"
 #         success = start_modelzoo(task_name, server_cmd, client_cmd, env, log_file_pattern.format(role = "Server"), log_file_pattern.format(role = "Client"))
 #         print(f"任务 {task_name}-{model_name}:[用户自定义 Client] 完成 → {'成功' if success else '失败'}")
 #         return success
-# 
+#
 #     # 非customized任务
 #     firstE2E = True
 #     for batch_size, input_len, output_len in bs_in_out_list:
-# 
+#
 #         if env_vars:
 #             task_env = {**render_magic({**env_vars}, modelName = model_name, prompts = batch_size * config.promptRatio, bs = batch_size, input = input_len, output = output_len, tp = tp_size, port = port)}
-#         
+#
 #         server_log_file_name = f"{model_name}-{task_name}-Server-{config.config_name}.log"
 #         client_log_file_name = f"{model_name}-{task_name}-Client-{config.config_name}-All-Cases.log"
 #         server_log_file = str(log_dir / server_log_file_name)
 #         client_log_file = str(log_dir / client_log_file_name)
-# 
+#
 #         env = {**os.environ, **(task_env or {})}
-# 
+#
 #         server_cmd = render_magic(server_cmd_base, modelPath = model_path, prompts = batch_size * config.promptRatio, bs = batch_size, input = input_len, output = output_len, tp = tp_size, port = port)
 #         client_cmd = render_magic(client_cmd_base, modelPath = model_path, prompts = batch_size * config.promptRatio, bs = batch_size, input = input_len, output = output_len, tp = tp_size, port = port)
-# 
+#
 #         if task_name == "E2E":
 #             if firstE2E:
 #                 firstE2E = False
 #             else:
 #                 server_cmd = None
-# 
+#
 #         if task_name == "TritonDump":
 #             # 避免dumpKernel的结果到其他目录下
 #             server_cmd = f"cd {out_dir} && {server_cmd}"
-#         
+#
 #         # extra_args is a list
 #         extra_args = taskConfig.get("extra-args", None)
 #         if extra_args:
 #             print(f" 任务 {task_name} 有额外参数 {extra_args} 已自动为您添加")
 #             server_cmd += " " + " ".join(extra_args)
-# 
+#
 #         print(f"\n{'='*100}")
 #         print(f" 执行任务 [{task_name}] | Case: bs{batch_size}-input{input_len}-output{output_len} |")
 #         print(f" 环境变量: {task_env} ")
@@ -361,7 +361,7 @@ READY_LOG  = "Application startup complete"
 #         success = start_modelzoo(task_name, server_cmd, client_cmd, env, server_log_file, client_log_file)
 #         print(f"任务 {task_name}-{model_name}:[bs{batch_size}-input{input_len}-output{output_len}] 完成 → {'成功' if success else '失败'}")
 #         if not success: return success
-#     
+#
 #     if task_name == "E2E" and server_p and server_p.is_alive():
 #         print("Client 结束 → 终止 Server 进程...")
 #         try:
@@ -379,7 +379,7 @@ def get_strategy(task_name: str, cases: List[Case]):
     else:
         return PairStrategy(task_name, cases)
 
-def run_task(task_flag: str, out_dir: Path) -> bool:
+def run_task(task_flag: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
     config = _Config()
     task_info = TASKS[task_flag]
     task_name = task_info["TASK"]
@@ -394,7 +394,7 @@ def run_task(task_flag: str, out_dir: Path) -> bool:
     builder = CommandBuilder()
 
     timestamp = time.strftime("%Y%m%d_%H_%M")
-    log_dir = out_dir / f"{config.fileName}" / task_name / timestamp
+    log_dir = out_dir / f"{config.fileName}" / task_name / (timestamp + (log_tag if log_tag is not None else ''))
     log_dir.mkdir(parents=True, exist_ok=True)
 
     if task_name == "TritonDump":
@@ -494,6 +494,13 @@ def create_parser():
     )
 
     parser.add_argument(
+        "--tag",
+        type=str,
+        default=None,
+        help="给最终的log路径名称添加tag，方便区分。默认是时间命名，添加该参数可以在末尾添加tag"
+    )
+
+    parser.add_argument(
         "-p", "--profiler",
         action="store_true",
         help="执行torch profiler抓取算子数据",
@@ -545,6 +552,8 @@ def main():
     result_dir = Path(args.output_dir).resolve()
     result_dir.mkdir(parents=True, exist_ok=True)
 
+    log_tag = args.tag
+
     _Config(args.config)
 
     selected = []
@@ -557,10 +566,10 @@ def main():
 
     if not selected:
         parser.error("至少要选择一个任务！请查看 --help")
-    
+
     try:
         for name in selected:
-            if not run_task(name, result_dir): 
+            if not run_task(name, result_dir, log_tag):
                 print(f"任务 {TASKS[name]['TASK']} 失败，停止后续任务\n")
                 sys.exit(1)
 
