@@ -222,7 +222,7 @@ def run_task(task_flag: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
     builder = CommandBuilder()
 
     timestamp = time.strftime("%Y%m%d_%H_%M")
-    log_dir = out_dir / f"{config.fileName}" / task_name / (timestamp + (log_tag if log_tag is not None else ''))
+    log_dir = out_dir / f"{config.fileName}" / task_name / (timestamp + ('+'+log_tag if log_tag is not None else ''))
     log_dir.mkdir(parents=True, exist_ok=True)
 
     if task_name == "TritonDump":
