@@ -5,6 +5,9 @@ from pathlib import Path
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# server 启动完成的默认日志标志
+DEFAULT_READY_TAG = "Application startup complete"
+
 
 class _Config:
     """配置单例类（已适配最新 config 结构）"""
@@ -26,6 +29,7 @@ class _Config:
         self.default_server: Dict[str, Any] = {}
         self.default_client: Dict[str, Any] = {}
         self.tasks: Dict[str, Dict[str, Any]] = {}   # 各任务类型配置
+        self.ready_tag: Any = DEFAULT_READY_TAG      # server 启动完成标志（顶层默认值）
 
         # ==================== 解析配置 ====================
         if configPath is None:
@@ -60,8 +64,11 @@ class _Config:
         self.default_server = data.get("server", {})
         self.default_client = data.get("client", {})
 
+        # server 启动完成标志：顶层 readyTag，支持字符串或字符串列表
+        self.ready_tag = data.get("readyTag", DEFAULT_READY_TAG)
+
         # 解析各个任务类型
-        known_keys = {"modelName", "task_info", "server", "client"}
+        known_keys = {"modelName", "modelPath", "readyTag", "task_info", "server", "client"}
         for key, value in data.items():
             if key not in known_keys and isinstance(value, dict):
                 self.tasks[key] = value
@@ -70,6 +77,18 @@ class _Config:
 
     def get_task_config(self, task_name: str) -> Dict[str, Any]:
         return self.tasks.get(task_name, {})
+
+    def get_task_names(self) -> List[str]:
+        """配置文件中定义的所有任务名称（顺序为配置书写顺序）。"""
+        return list(self.tasks.keys())
+
+    def get_task_type(self, task_name: str) -> Optional[str]:
+        """任务类型（决定调度行为），对应任务段里的 type 字段。"""
+        return self.get_task_config(task_name).get("type")
+
+    def should_clean_triton_cache(self, task_name: str) -> bool:
+        """任务开始前是否清理 triton 编译缓存，对应任务段里的 cleanTritonCache 字段。"""
+        return bool(self.get_task_config(task_name).get("cleanTritonCache", False))
 
     def get_bs_in_out(self, task_name: str) -> List[List[int]]:
         return self.get_task_config(task_name).get("bs_in_out", [])
@@ -90,6 +109,14 @@ class _Config:
 
     def get_task_info(self) -> Dict[str, Any]:
         return self.task_info
+
+    def get_ready_tag(self, task_name: Optional[str] = None) -> Any:
+        """server 启动完成标志。任务级 readyTag 优先于顶层 readyTag。"""
+        if task_name:
+            task_tag = self.get_task_config(task_name).get("readyTag")
+            if task_tag is not None:
+                return task_tag
+        return self.ready_tag
 
     def __getitem__(self, key: str):
         if key in self.__dict__:

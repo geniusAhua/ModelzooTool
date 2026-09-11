@@ -1,11 +1,38 @@
 # 使用说明
 
 ## 命令
-通过--help查看命令帮助
 
-`-E`会启动端到端测试，该测试仅启动一次server，然后遍历提供的case，串行启动client
+通过 `--help` 查看命令帮助。
 
-其余类型的任务，server和client是成对调度，每一个case都对应一对server命令和client命令, `-ptfb` 表示执行profile，tlas， flash attn，blas
+用 `--task` 指定要执行的任务名称（可写多个，按顺序执行），任务名称来自配置文件里自定义的任务段：
+
+```bash
+python bin/main.py --config <config.jsonc> --task profiler tlas -o <log_dir>
+```
+
+多个任务按 `--task` 给出的顺序依次执行；**某个任务失败不会中断后续任务**，会继续尝试剩下的任务，
+全部执行完后若有失败的任务则以非零退出码（`1`）结束（并在结尾打印失败任务名）。
+
+任务类型由任务段里的 `type` 字段决定（与任务名称无关，任务名随便起）：
+
+| 类型 | 说明 |
+|------|------|
+| `e2e`  | 端到端：只启动一次 server，然后串行跑完所有 case |
+| `pair` | 成对：每个 case 一对 server + client（每个 case 会重启 server），适合抓 profiler / shape 等 |
+
+任务段示例（名称自定，只需写 `type`）：
+
+```jsonc
+"my_task": {
+    // 必填，任务类型：e2e / pair
+    "type": "pair",
+    "bs_in_out": [[1, 1000, 16], [4, 2500, 16]],
+    "server": { "cmd": null, "env": {}, "extra_args": ["--enforce-eager"] },
+    "client": { "cmd": null, "env": {}, "extra_args": [] },
+    // 可选：任务开始前清理 triton 编译缓存（原 TritonDump 的行为）
+    "cleanTritonCache": true
+}
+```
 
 ## config.json
 `task_info`中是自定义魔法变量，可在 命令/环境变量/额外参数 中，通过 `{}` 包起来使用对应的魔法变量值
@@ -18,6 +45,10 @@
     当前case对应的bs，input，output。由于必须提供case才能启动client，如果**client不需要这些参数值**，也可以设置一个**无意义的值**用于**占位**来正常启动client
 4. 关于`{}`使用事项
     如果字符串中需要提供`{}`，请多加一层，写为`{{}}`,这样python可以将其正确解释为`{}`否则会认为是一个魔法变量尝试渲染
+5. 关于 server 就绪标志 `readyTag`（可选）
+    工具默认以 server 日志中出现 `Application startup complete` 作为“启动完成”信号（命中后才会启动 client）。
+    该标志可在配置中自定义：顶层写 `readyTag` 作为全局默认值，或在某个任务段内写 `readyTag` 覆盖它。
+    值可以是字符串，也可以是字符串数组（命中任意一个即认为就绪）。
 
 ```jsonc
 //举例
@@ -25,6 +56,9 @@
     // ==================== 基础信息 ====================
     // task_info里面的字段可以作为魔法变量，用于渲染出真正的server cmd和client cmd。此时就需要保证命令中的待填充变量名和字段名相同
     "modelPath": "/metax0402/models/jd-opensource/JoyAI-LLM-Flash",
+    // server 启动完成的日志标志（可选，默认 "Application startup complete"）
+    // 支持字符串或字符串数组（命中任意一个即认为就绪）；也可以在具体任务段里写 readyTag 覆盖顶层
+    "readyTag": "Application startup complete",
     // 自定义可填充项，命令/环境变量/额外参数中如果使用{}包起来，表示当前值需要被填充，如果在task_info中存在，将会使用该值进行替代
     "task_info":{
         "tp": 2,
@@ -51,6 +85,8 @@
 
     // ==================== E2E 任务 ====================
     "E2E": {
+        // 任务类型：e2e=只启动一次 server，串行跑完所有 case；pair=每 case 一对 server+client
+        "type": "e2e",
         // 具体的case，分别表示bs, input, output, 是可填充项，填充名称为{bs}, {input}, {output}
         "bs_in_out": [
             [0, 0, 0]
@@ -73,6 +109,7 @@
 
     // ==================== Profiler 任务（非 E2E，使用 Pair 模式） ====================
     "Profiler": {
+        "type": "pair",
         "bs_in_out": [
             [1, 1000, 16],
             [1, 2500, 16],
@@ -103,6 +140,7 @@
 
 
     "TlasShape": {
+        "type": "pair",
         "bs_in_out": [
             [1, 1000, 16],
             [1, 2500, 16],
@@ -132,6 +170,7 @@
     },
 
     "BlasShape": {
+        "type": "pair",
         "bs_in_out": [
             [1, 1000, 16],
             [1, 2500, 16],
@@ -160,6 +199,7 @@
     },
 
     "FlashAttnShape": {
+        "type": "pair",
         "bs_in_out": [
             [1, 1000, 16],
             [1, 2500, 16],
@@ -229,7 +269,7 @@ cmd=""
 for config in "${configs[@]}"; do
     cmd+="echo \">>> 开始执行: $config\""$'\n'
     # main execution, change the arg for your own project
-    cmd+="python \"$SCRIPT\" --config \"$config\" -E -o \"$LOG_DIR\""$'\n'
+    cmd+="python \"$SCRIPT\" --config \"$config\" --task <任务名> -o \"$LOG_DIR\""$'\n'
     cmd+="echo \">>> 完成: $config\""$'\n'
     cmd+="echo \"----------------------------------------\""$'\n'
 done

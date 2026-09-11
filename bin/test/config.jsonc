@@ -2,6 +2,9 @@
     // ==================== 基础信息 ====================
     // task_info里面的字段可以作为魔法变量，用于渲染出真正的server cmd和client cmd。此时就需要保证命令中的待填充变量名和字段名相同
     "modelPath": "/metax0402/models/google/gemma-4-31B-it",
+    // server 启动完成的日志标志（可选，默认 "Application startup complete"）
+    // 支持字符串或字符串数组（命中任意一个即认为就绪）；也可以在具体任务段里写 readyTag 覆盖顶层
+    "readyTag": "Application startup complete",
     "task_info":{
         "tp": 4,
         "chunk_size": 8,
@@ -27,6 +30,8 @@
 
     // ==================== E2E 任务 ====================
     "E2E": {
+        // 任务类型：e2e=只启动一次 server，串行跑完所有 case；pair=每 case 一对 server+client
+        "type": "e2e",
         "bs_in_out": [
             [0, 0, 0]
         ],
@@ -47,6 +52,7 @@
 
     // ==================== Profiler 任务（非 E2E，使用 Pair 模式） ====================
     "Profiler": {
+        "type": "pair",
         "bs_in_out": [
             [1, 2500, 16],
             [1, 3500, 16],
@@ -72,6 +78,7 @@
 
 
     "TlasShape": {
+        "type": "pair",
         "bs_in_out": [
             [1, 2500, 16],
             [1, 3500, 16],
@@ -97,6 +104,7 @@
     },
 
     "BlasShape": {
+        "type": "pair",
         "bs_in_out": [
             [1, 2500, 16],
             [1, 3500, 16],
@@ -121,6 +129,7 @@
     },
 
     "FlashAttnShape": {
+        "type": "pair",
         "bs_in_out": [
             [1, 2500, 16],
             [1, 3500, 16],
