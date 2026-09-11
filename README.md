@@ -18,6 +18,10 @@
     当前case对应的bs，input，output。由于必须提供case才能启动client，如果**client不需要这些参数值**，也可以设置一个**无意义的值**用于**占位**来正常启动client
 4. 关于`{}`使用事项
     如果字符串中需要提供`{}`，请多加一层，写为`{{}}`,这样python可以将其正确解释为`{}`否则会认为是一个魔法变量尝试渲染
+5. 关于 server 就绪标志 `readyTag`（可选）
+    工具默认以 server 日志中出现 `Application startup complete` 作为“启动完成”信号（命中后才会启动 client）。
+    该标志可在配置中自定义：顶层写 `readyTag` 作为全局默认值，或在某个任务段内写 `readyTag` 覆盖它。
+    值可以是字符串，也可以是字符串数组（命中任意一个即认为就绪）。
 
 ```jsonc
 //举例
@@ -25,6 +29,9 @@
     // ==================== 基础信息 ====================
     // task_info里面的字段可以作为魔法变量，用于渲染出真正的server cmd和client cmd。此时就需要保证命令中的待填充变量名和字段名相同
     "modelPath": "/metax0402/models/jd-opensource/JoyAI-LLM-Flash",
+    // server 启动完成的日志标志（可选，默认 "Application startup complete"）
+    // 支持字符串或字符串数组（命中任意一个即认为就绪）；也可以在具体任务段里写 readyTag 覆盖顶层
+    "readyTag": "Application startup complete",
     // 自定义可填充项，命令/环境变量/额外参数中如果使用{}包起来，表示当前值需要被填充，如果在task_info中存在，将会使用该值进行替代
     "task_info":{
         "tp": 2,

@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, TYPE_CHECKING, Optional, List
 from multiprocessing import Process, Event
-from core.modelzooProcessor import ServerProc, ClientProc
+from core.modelzooProcessor import ServerProc, ClientProc, DEFAULT_READY_TAG
 from core.config_parse import _Config
 from utils.command_builder import CommandBuilder
 from task.base_strategy import Case
@@ -81,7 +81,8 @@ def start_modelzoo(
     env: dict,
     server_log: str,
     client_log: str,
-    is_pair_mode: bool = False
+    is_pair_mode: bool = False,
+    ready_tag: Optional[str] = None
 ) -> bool:
     """
     启动 Server + Client
@@ -98,7 +99,8 @@ def start_modelzoo(
                 env=env,
                 ready_event=ready_event,
                 error_event=error_event,
-                log_path=server_log
+                log_path=server_log,
+                ready_tag=ready_tag if ready_tag is not None else DEFAULT_READY_TAG
             )
             server_p = Process(target=server_runner.start, daemon=True)
             server_p.start()
@@ -220,6 +222,7 @@ def run_task(task_flag: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
     cases = [Case(bs=bs, input_len=inp, output_len=out) for bs, inp, out in bs_in_out_list]
     strategy = get_strategy(task_name, cases)
     builder = CommandBuilder()
+    ready_tag = config.get_ready_tag(task_name)
 
     timestamp = time.strftime("%Y%m%d_%H_%M")
     log_dir = out_dir / f"{config.fileName}" / task_name / (timestamp + ('+'+log_tag if log_tag is not None else ''))
@@ -284,7 +287,8 @@ def run_task(task_flag: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
             env=env,
             server_log=server_log,
             client_log=client_log,
-            is_pair_mode=is_pair_mode
+            is_pair_mode=is_pair_mode,
+            ready_tag=ready_tag
         )
 
         if not success:
