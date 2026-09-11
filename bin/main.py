@@ -15,33 +15,16 @@ from core.modelzooProcessor import ServerProc, ClientProc, DEFAULT_READY_TAG
 from core.config_parse import _Config
 from utils.command_builder import CommandBuilder
 from task.base_strategy import Case
-from task.e2e_strategy import E2EStrategy
-from task.pair_strategy import PairStrategy
-
-
+from task.task_types import (
+    E2E_TASK_TYPE,
+    describe_task_types,
+    get_strategy,
+    get_task_type_meta,
+)
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-
-TASKS = {
-    "p": {
-        "TASK": "Profiler"
-    },
-    "b": {
-        "TASK": "BlasShape"
-    },
-    "t": {
-        "TASK": "TlasShape"
-    },
-    "f": {
-        "TASK": "FlashAttnShape"
-    },
-    "d": {
-        "TASK": "TritonDump"
-    },
-    "E": {"TASK": "E2E"},
-}
 
 def clean_triton_cache():
     commands = [
@@ -202,17 +185,23 @@ def render_magic(template_obj: "list[str, dict]", **kwargs):
 
 
 
-def get_strategy(task_name: str, cases: List[Case]):
-    """根据任务类型返回对应的策略"""
-    if task_name == "E2E":
-        return E2EStrategy(task_name, cases)
-    else:
-        return PairStrategy(task_name, cases)
-
-def run_task(task_flag: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
+def run_task(task_name: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
     config = _Config()
-    task_info = TASKS[task_flag]
-    task_name = task_info["TASK"]
+
+    available = config.get_task_names()
+    if task_name not in available:
+        print(f"[错误] 配置中不存在任务: {task_name}（可用: {', '.join(available) or '无'}）")
+        return False
+
+    task_type = config.get_task_type(task_name)
+    if not task_type:
+        print(f"[错误] 任务 \"{task_name}\" 缺少 type 字段；可用类型: {describe_task_types()}")
+        return False
+    try:
+        get_task_type_meta(task_type)
+    except ValueError as e:
+        print(f"[错误] {e}")
+        return False
 
     bs_in_out_list = config.get_bs_in_out(task_name)
     if not bs_in_out_list:
@@ -220,7 +209,7 @@ def run_task(task_flag: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
         return True
 
     cases = [Case(bs=bs, input_len=inp, output_len=out) for bs, inp, out in bs_in_out_list]
-    strategy = get_strategy(task_name, cases)
+    strategy = get_strategy(task_type, task_name, cases)
     builder = CommandBuilder()
     ready_tag = config.get_ready_tag(task_name)
 
@@ -228,10 +217,10 @@ def run_task(task_flag: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
     log_dir = out_dir / f"{config.fileName}" / task_name / (timestamp + ('+'+log_tag if log_tag is not None else ''))
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    if task_name == "TritonDump":
+    if config.should_clean_triton_cache(task_name):
         clean_triton_cache()
 
-    is_e2e = (task_name == "E2E")
+    is_e2e = (task_type == E2E_TASK_TYPE)
     is_pair_mode = not is_e2e
 
     while strategy.has_next():
@@ -295,7 +284,6 @@ def run_task(task_flag: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
             print(f"任务 {task_name} 执行失败，停止")
             # E2E 失败时也要尝试清理 server
             if is_e2e:
-                from main import _cleanup_processes   # 根据实际位置调整
                 _cleanup_processes()
             return False
 
@@ -305,7 +293,6 @@ def run_task(task_flag: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
     # 所有 Client 执行完后，清理 Server
     if is_e2e:
         print(f"\n[{task_name}] 所有 Client 执行完毕，正在清理 Server 进程...")
-        from main import _cleanup_processes
         _cleanup_processes()
 
     print(f"\n任务 {task_name} 执行完成\n")
@@ -333,39 +320,11 @@ def create_parser():
     )
 
     parser.add_argument(
-        "-p", "--profiler",
-        action="store_true",
-        help="执行torch profiler抓取算子数据",
-    )
-
-    parser.add_argument(
-        "-t", "--tlas-shape",
-        action="store_true",
-        help="抓取mctlas shape",
-    )
-
-    parser.add_argument(
-        "-b", "--blas-shape",
-        action="store_true",
-        help="抓取mcblas shape",
-    )
-
-    parser.add_argument(
-        "-f", "--flash-attn-shape",
-        action="store_true",
-        help="抓取flash attention shape",
-    )
-
-    parser.add_argument(
-        "-d", "--dump-triton",
-        action="store_true",
-        help="抓取triton kernel",
-    )
-
-    parser.add_argument(
-        "-E", "--E2E",
-        action="store_true",
-        help="执行端到端测试命令",
+        "--task",
+        nargs="+",
+        default=None,
+        metavar="NAME",
+        help=f"要执行的任务名称（可写多个，按顺序执行；取自配置文件中自定义的任务段）。任务类型: {describe_task_types()}",
     )
 
     parser.add_argument(
@@ -387,22 +346,27 @@ def main():
     log_tag = args.tag
 
     _Config(args.config)
+    config = _Config()
 
-    selected = []
-    if args.profiler: selected.append("p")
-    if args.tlas_shape: selected.append("t")
-    if args.blas_shape: selected.append("b")
-    if args.flash_attn_shape: selected.append("f")
-    if args.dump_triton: selected.append("d")
-    if args.E2E: selected.append("E")
+    task_names = args.task
+    if not task_names:
+        parser.error(
+            "请用 --task 指定要执行的任务名称（可多个）。"
+            f"配置中的任务: {', '.join(config.get_task_names()) or '无'}"
+        )
 
-    if not selected:
-        parser.error("至少要选择一个任务！请查看 --help")
+    available = config.get_task_names()
+    unknown = [name for name in task_names if name not in available]
+    if unknown:
+        parser.error(
+            f"配置中不存在这些任务: {', '.join(unknown)}；"
+            f"可用任务: {', '.join(available) or '无'}"
+        )
 
     try:
-        for name in selected:
+        for name in task_names:
             if not run_task(name, result_dir, log_tag):
-                print(f"任务 {TASKS[name]['TASK']} 失败，停止后续任务\n")
+                print(f"任务 {name} 失败，停止后续任务\n")
                 sys.exit(1)
 
         print(f"Auto Modelzoo Tool 执行完毕!")

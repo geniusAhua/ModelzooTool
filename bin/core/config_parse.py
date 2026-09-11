@@ -78,6 +78,18 @@ class _Config:
     def get_task_config(self, task_name: str) -> Dict[str, Any]:
         return self.tasks.get(task_name, {})
 
+    def get_task_names(self) -> List[str]:
+        """配置文件中定义的所有任务名称（顺序为配置书写顺序）。"""
+        return list(self.tasks.keys())
+
+    def get_task_type(self, task_name: str) -> Optional[str]:
+        """任务类型（决定调度行为），对应任务段里的 type 字段。"""
+        return self.get_task_config(task_name).get("type")
+
+    def should_clean_triton_cache(self, task_name: str) -> bool:
+        """任务开始前是否清理 triton 编译缓存，对应任务段里的 cleanTritonCache 字段。"""
+        return bool(self.get_task_config(task_name).get("cleanTritonCache", False))
+
     def get_bs_in_out(self, task_name: str) -> List[List[int]]:
         return self.get_task_config(task_name).get("bs_in_out", [])
 
