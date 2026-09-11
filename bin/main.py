@@ -363,11 +363,22 @@ def main():
             f"可用任务: {', '.join(available) or '无'}"
         )
 
+    failed = []
     try:
         for name in task_names:
+            # 每个任务开始前清空错误标志并清理残留进程，
+            # 保证前一个任务的失败不会影响后续任务的启动
+            error_event.clear()
+            _cleanup_processes()
+
             if not run_task(name, result_dir, log_tag):
-                print(f"任务 {name} 失败，停止后续任务\n")
-                sys.exit(1)
+                print(f"任务 {name} 失败，继续执行后续任务\n")
+                failed.append(name)
+
+        if failed:
+            print(f"\n以下任务失败: {', '.join(failed)}")
+            print(f"其余任务已执行完毕!")
+            sys.exit(1)
 
         print(f"Auto Modelzoo Tool 执行完毕!")
     except KeyboardInterrupt:
