@@ -98,17 +98,14 @@ class ServerProc(ModelzooProcess):
     def __init__(self, cmd: "str", env: "dict", ready_event: "Event", error_event: "Event", log_path: "str", ready_tag: "str" = READY_LOG):
         super().__init__("Server", cmd, env, log_path, ready_event, error_event, self._log_check)
         self._log_mod = "w"
-        # ready_tag 支持字符串或字符串列表，命中任意一个即认为 server 就绪
-        self._ready_tags = [ready_tag] if isinstance(ready_tag, str) else list(ready_tag)
+        # ready_tag 只允许单个字符串，命中即认为 server 就绪
+        self._ready_tag = ready_tag
 
 
     def _log_check(self, line):
-        if not self._ready_event.is_set():
-            for tag in self._ready_tags:
-                if tag and tag in line:
-                    self._ready_event.set()
-                    print(f"Server 已就绪（命中标志: {tag}）→ 通知 Client 可以启动")
-                    break
+        if not self._ready_event.is_set() and self._ready_tag and self._ready_tag in line:
+            self._ready_event.set()
+            print(f"Server 已就绪（命中标志: {self._ready_tag}）→ 通知 Client 可以启动")
 
         if "CUDA out of memory" in line or "Segmentation fault" in line:
             raise RuntimeError(f"检测到严重错误: {line}")

@@ -9,6 +9,15 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_READY_TAG = "Application startup complete"
 
 
+def parse_ready_tag(value: Any, where: str = "") -> str:
+    """readyTag 只允许单个字符串（不再支持数组），否则直接报错。"""
+    if isinstance(value, str):
+        return value
+    raise ValueError(
+        f"{where}readyTag 必须是单个字符串（已不再支持数组），当前为: {value!r}"
+    )
+
+
 class _Config:
     """配置单例类（已适配最新 config 结构）"""
     _instance = None
@@ -29,7 +38,7 @@ class _Config:
         self.default_server: Dict[str, Any] = {}
         self.default_client: Dict[str, Any] = {}
         self.tasks: Dict[str, Dict[str, Any]] = {}   # 各任务类型配置
-        self.ready_tag: Any = DEFAULT_READY_TAG      # server 启动完成标志（顶层默认值）
+        self.ready_tag: str = DEFAULT_READY_TAG      # server 启动完成标志（顶层默认值，单个字符串）
 
         # ==================== 解析配置 ====================
         if configPath is None:
@@ -64,14 +73,19 @@ class _Config:
         self.default_server = data.get("server", {})
         self.default_client = data.get("client", {})
 
-        # server 启动完成标志：顶层 readyTag，支持字符串或字符串列表
-        self.ready_tag = data.get("readyTag", DEFAULT_READY_TAG)
+        # server 启动完成标志：顶层 readyTag（只允许单个字符串）
+        self.ready_tag = parse_ready_tag(data.get("readyTag", DEFAULT_READY_TAG), "顶层")
 
         # 解析各个任务类型
         known_keys = {"modelName", "modelPath", "readyTag", "task_info", "server", "client"}
         for key, value in data.items():
             if key not in known_keys and isinstance(value, dict):
                 self.tasks[key] = value
+
+        # 任务级 readyTag（可选，覆写顶层）同样只允许单个字符串
+        for name, task_cfg in self.tasks.items():
+            if "readyTag" in task_cfg:
+                parse_ready_tag(task_cfg["readyTag"], f'任务 "{name}" 的')
 
     # ==================== 便捷方法 ====================
 
@@ -110,8 +124,8 @@ class _Config:
     def get_task_info(self) -> Dict[str, Any]:
         return self.task_info
 
-    def get_ready_tag(self, task_name: Optional[str] = None) -> Any:
-        """server 启动完成标志。任务级 readyTag 优先于顶层 readyTag。"""
+    def get_ready_tag(self, task_name: Optional[str] = None) -> str:
+        """server 启动完成标志（单个字符串）。任务级 readyTag 优先于顶层 readyTag。"""
         if task_name:
             task_tag = self.get_task_config(task_name).get("readyTag")
             if task_tag is not None:
