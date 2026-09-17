@@ -11,10 +11,17 @@ DEFAULT_READY_TAG = "Application startup complete"
 READY_LOG = DEFAULT_READY_TAG
 
 class ModelzooProcess():
-    def __init__(self,role: "str", cmd: "str", env: "dict", log_path: "str", ready_event: "Event", error_event: "Event", callback: "Optional[Callable[[str], None]]" = None):
+    # 日志头里除「本任务配置的环境变量」外，额外记录从外部继承下来的、与设备/框架相关的变量，
+    # 便于事后复盘「这次到底用了哪些卡、带了哪些开关」（它们不一定写在 config 里）。要加就改这两个元组。
+    _ENV_KEY_PREFIXES = ("CUDA_VISIBLE_DEVICES", "MACA_", "VLLM_", "SGLANG_", "ASCEND_", "HCCL_", "NCCL_", "OMP_NUM_THREADS")
+    _ENV_KEY_SUFFIXES = ("_PROXY",)
+
+    def __init__(self,role: "str", cmd: "str", env: "dict", log_path: "str", ready_event: "Event", error_event: "Event", callback: "Optional[Callable[[str], None]]" = None, task_env: "Optional[dict]" = None):
         self._role = role
         self._cmd = cmd
         self._env = env
+        # 本任务在 config 里配置的 env（server.env / client.env），仅用于写日志头
+        self._task_env = task_env or {}
         self._log_path = log_path
         self._ready_event = ready_event
         self._error_event = error_event
@@ -78,6 +85,8 @@ class ModelzooProcess():
     def _log_worker(self):
         with open(self._log_path, self._log_mod, encoding="utf-8") as f:
             f.write(f"run: {self._cmd}\n")
+            f.write(self._env_log_header())
+            f.flush()
             for line in self._proc.stdout:
                 f.write(line)
                 f.flush()
@@ -85,6 +94,31 @@ class ModelzooProcess():
                     self._callback(line)
 
     
+    @classmethod
+    def _is_env_of_interest(cls, key: "str") -> bool:
+        upper = key.upper()
+        return upper.startswith(cls._ENV_KEY_PREFIXES) or upper.endswith(cls._ENV_KEY_SUFFIXES)
+
+
+    def _env_log_header(self) -> "str":
+        """写到日志开头的环境变量摘要（在 `run: <cmd>` 之后）。
+
+        * ``[<Role>-ENV]``：本任务在配置文件里配的 env（server.env / client.env，已按 case 渲染）
+        * ``[<Role>-ENV:inherited]``：从外部继承的、与设备/框架相关的变量（如 CUDA_VISIBLE_DEVICES）
+          —— 它们不在配置里，但排查问题时往往最关键。
+        """
+        def _fmt(items) -> "str":
+            return " ".join(f"{k}={v}" for k, v in items) if items else "<empty>"
+
+        task_items = sorted((k, str(v)) for k, v in self._task_env.items())
+        inherited = sorted(
+            (k, str(v)) for k, v in self._env.items()
+            if self._is_env_of_interest(k) and k not in self._task_env
+        )
+        return (f"[{self._role}-ENV] {_fmt(task_items)}\n"
+                f"[{self._role}-ENV:inherited] {_fmt(inherited)}\n")
+
+
     def _head_title_print(self):
         print(f"{self._role} 进程启动，查看log请执行:", flush=True)
         print(f"tail -f {self._log_path}", flush=True)
@@ -95,8 +129,8 @@ class ModelzooProcess():
 
 
 class ServerProc(ModelzooProcess):
-    def __init__(self, cmd: "str", env: "dict", ready_event: "Event", error_event: "Event", log_path: "str", ready_tag: "str" = READY_LOG):
-        super().__init__("Server", cmd, env, log_path, ready_event, error_event, self._log_check)
+    def __init__(self, cmd: "str", env: "dict", ready_event: "Event", error_event: "Event", log_path: "str", ready_tag: "str" = READY_LOG, task_env: "Optional[dict]" = None):
+        super().__init__("Server", cmd, env, log_path, ready_event, error_event, self._log_check, task_env)
         self._log_mod = "w"
         # ready_tag 只允许单个字符串，命中即认为 server 就绪
         self._ready_tag = ready_tag
@@ -112,8 +146,8 @@ class ServerProc(ModelzooProcess):
 
 
 class ClientProc(ModelzooProcess):
-    def __init__(self, cmd: "str", env: "dict", ready_event: "Event", error_event: "Event", log_path: "str"):
-        super().__init__("Client", cmd, env, log_path, ready_event, error_event)
+    def __init__(self, cmd: "str", env: "dict", ready_event: "Event", error_event: "Event", log_path: "str", task_env: "Optional[dict]" = None):
+        super().__init__("Client", cmd, env, log_path, ready_event, error_event, None, task_env)
         self._log_mod = "a"
 
 

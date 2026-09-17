@@ -65,7 +65,9 @@ def start_modelzoo(
     server_log: str,
     client_log: str,
     is_pair_mode: bool = False,
-    ready_tag: Optional[str] = None
+    ready_tag: Optional[str] = None,
+    server_env: Optional[dict] = None,
+    client_env: Optional[dict] = None,
 ) -> bool:
     """
     启动 Server + Client
@@ -83,7 +85,8 @@ def start_modelzoo(
                 ready_event=ready_event,
                 error_event=error_event,
                 log_path=server_log,
-                ready_tag=ready_tag if ready_tag is not None else DEFAULT_READY_TAG
+                ready_tag=ready_tag if ready_tag is not None else DEFAULT_READY_TAG,
+                task_env=server_env
             )
             server_p = Process(target=server_runner.start, daemon=True)
             server_p.start()
@@ -94,7 +97,8 @@ def start_modelzoo(
             env=env,
             ready_event=ready_event,
             error_event=error_event,
-            log_path=client_log
+            log_path=client_log,
+            task_env=client_env
         )
         client_p = Process(target=client_runner.start, daemon=True)
         client_p.start()
@@ -277,7 +281,9 @@ def run_task(task_name: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
             server_log=server_log,
             client_log=client_log,
             is_pair_mode=is_pair_mode,
-            ready_tag=ready_tag
+            ready_tag=ready_tag,
+            server_env=server_env,
+            client_env=client_env,
         )
 
         if not success:
