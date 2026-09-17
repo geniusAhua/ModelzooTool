@@ -292,3 +292,33 @@ su - "${user}" << EOF
     fi
 EOF
 ```
+
+***
+
+## skill（agent 技能）
+
+`skill/` 目录存放 agent 技能（Zed 的 Agent Skills）。技能真身随仓库走 —— 跟代码一起评审、演进、复用；每台机器上只需在 agent 的技能目录里放一个软链接指过来。
+
+以 `modelzoo-config-builder` 为例（在仓库根目录下执行）：
+
+```bash
+REPO=$(git rev-parse --show-toplevel)     # 本仓库根目录
+NAME=modelzoo-config-builder              # skill/ 下的技能目录名
+DEST=~/.agents/skills                     # agent 读取全局技能的目录
+
+mkdir -p "$DEST"
+ln -s "../../$(realpath --relative-to="$HOME" "$REPO")/skill/$NAME" "$DEST/$NAME"
+```
+
+验证（能打印出 SKILL.md 的头部即成功）：
+
+```bash
+head -n 3 ~/.agents/skills/$NAME/SKILL.md
+```
+
+注意事项：
+
+- **必须用相对路径**。同一份文件在不同平台看到的路径不同（Linux 侧 `/sw_home/<user>/...`，Windows 侧 `C:\Users\<user>\...`），绝对路径在另一端解析不了。
+- `~/.agents/skills` 下若已有同名目录，`ln -s` **不会覆盖**它 —— 先 `rm -rf ~/.agents/skills/$NAME` 再建链接。
+- 新增技能不用改这里：把技能目录放进 `skill/`，对每个技能重复上面两条命令即可。
+- 卸载只删链接，不动仓库里的真身：`rm ~/.agents/skills/$NAME`。

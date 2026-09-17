@@ -1,0 +1,193 @@
+{
+    // ============================================================================
+    // ModelzooTool config 模板（JSON5：支持 // 注释、可尾随逗号）
+    //
+    // 填写顺序：
+    //   1) modelPath / task_info / readyTag —— 模型路径、自定义魔法变量、就绪标志
+    //   2) server / client                  —— 默认命令与环境变量（必填）
+    //   3) 各任务段                          —— 名字自定，必须含 type；
+    //                                          只保留需要的，不需要的整段删除
+    //
+    // 任务段约定（顶层除保留键 modelPath / modelName / readyTag / task_info /
+    // server / client 外，任意顶层 object 都是任务段）：
+    //   - "type": "e2e"   只启动一次 server，串行跑完所有 case
+    //   - "type": "pair"  每个 case 一对 server+client（每个 case 重启 server）
+    //   - 任务名可自定，执行时用 --task <任务名> [<任务名> ...] 选择
+    //   - 可选 "cleanTritonCache": true，任务开始前清理 triton 编译缓存
+    //
+    // 魔法变量：{bs} {input} {output} {prompts} {modelPath}
+    //           {__LOG_PATH__} {__FILE_NAME__} + task_info 里的任意键
+    // 字面量 {} 需写成 {{}}，否则会被当成魔法变量渲染并报 Missing。
+    // ============================================================================
+
+    // ==================== 基础信息 ====================
+    "modelPath": "/path/to/model",
+
+    // server 启动完成标志：顶层为全局默认，任务段内写 readyTag 可覆盖（与 type 同级）。
+    // 支持字符串或字符串数组（命中任意一个即视为就绪）。
+    // 默认 "Application startup complete"（vLLM 适用）；非 vLLM 服务（如 uvicorn/SGLang）
+    // 请按服务自身的就绪日志改这里，或在该任务段内单独覆盖。
+    "readyTag": "Application startup complete",
+
+    // 自定义可填充项：命令 / env / extra_args 中用 {key} 引用
+    // promptRatio 可选：{prompts} = bs * promptRatio，默认 1
+    "task_info": {
+        "tp": 4,
+        "port": 1136,
+        "chunk_size": 8
+    },
+
+    // ==================== 默认命令（必须提供） ====================
+    // 任务段里 cmd 为 null 时使用这里的命令；提供 cmd 则整条覆盖
+    "server": {
+        "cmd": "vllm serve {modelPath} --trust-remote-code --gpu-memory-utilization 0.9 -tp {tp} --port {port} --max-num-batched-tokens $(({chunk_size} * 1024))",
+        "env": {
+            // 数字会被自动转成字符串
+            "MACA_VLLM_ENABLE_MCTLASS_FUSED_MOE": 1,
+            "MACA_DIRECT_DISPATCH": 1,
+            "CUDA_VISIBLE_DEVICES": "0,1,2,3"
+        }
+    },
+
+    "client": {
+        "cmd": "vllm bench serve --model {modelPath} --port {port} --dataset_name random --random-input-len {input} --random-output-len {output} --num-prompts {prompts} --trust-remote-code --max-concurrency {bs} --ignore-eos --backend openai-chat --endpoint /v1/chat/completions",
+        "env": {}
+    },
+
+    // ==================== e2e 任务：只启一次 server，串行跑所有 case ====================
+    "e2e": {
+        "type": "e2e",
+        // [bs, input, output]；不需要这些值可用 [0, 0, 0] 占位
+        "bs_in_out": [
+            [0, 0, 0]
+        ],
+        // 需要覆盖 server 就绪标志时，在本层（与 type 同级）写 readyTag，支持数组：
+        // "readyTag": ["Application startup complete", "Uvicorn running on"],
+        "server": {
+            "cmd": null,          // null = 用默认命令
+            "env": {},
+            "extra_args": []      // 追加到命令末尾
+        },
+        "client": {
+            "cmd": "python /path/to/your_client.py -p {port} --log-path {__LOG_PATH__}",
+            "env": {},
+            "extra_args": []
+        }
+    },
+
+    // ==================== profiler 任务：每个 case 一对 server+client ====================
+    "profiler": {
+        "type": "pair",
+        "bs_in_out": [
+            [1, 1000, 16],
+            [1, 3000, 16],
+            [4, 1000, 16],
+            [4, 3000, 16]
+        ],
+        "server": {
+            "cmd": null,
+            "env": {},
+            "extra_args": [
+                "--no-enable-prefix-caching",
+                // 字面量 { } 必须写成 {{ }}，例：
+                "--profiler-config", "'{{\"profiler\":\"torch\", \"torch_profiler_dir\": \"{__LOG_PATH__}/{__FILE_NAME__}-tp{tp}-bs{bs}-in{input}-out{output}\"}}'"
+            ]
+        },
+        "client": {
+            "cmd": null,
+            "env": {},
+            // true = 先跑一遍热身，再执行 base+extra_args
+            "warmup": true,
+            "extra_args": ["--profile"]
+        }
+    },
+
+    // ==================== tlas 任务：抓 mctlas shape ====================
+    "tlas": {
+        "type": "pair",
+        "bs_in_out": [
+            [1, 1000, 16],
+            [1, 3000, 16],
+            [4, 1000, 16],
+            [4, 3000, 16]
+        ],
+        "server": {
+            "cmd": null,
+            "env": {
+                "MACA_LAUNCH_BLOCKING": 1,
+                "MCTLASS_LOG_ENABLE": "ON",
+                "MXLOG_LEVEL": "err,MCTLASSEX=debug"
+            },
+            "extra_args": ["--no-enable-prefix-caching", "--enforce-eager"]
+        },
+        "client": {
+            "cmd": null,
+            "env": {},
+            "extra_args": []
+        }
+    },
+
+    // ==================== blas 任务：抓 mcblas shape ====================
+    "blas": {
+        "type": "pair",
+        "bs_in_out": [
+            [1, 1000, 16],
+            [1, 3000, 16],
+            [4, 1000, 16],
+            [4, 3000, 16]
+        ],
+        "server": {
+            "cmd": null,
+            "env": {
+                "MACA_LAUNCH_BLOCKING": 1,
+                "MXLOG_LEVEL": "err,MCBLAS=info,MCBLASLT=info"
+            },
+            "extra_args": ["--no-enable-prefix-caching", "--enforce-eager"]
+        },
+        "client": {
+            "cmd": null,
+            "env": {},
+            "extra_args": []
+        }
+    },
+
+    // ==================== flash 任务：抓 flash attention shape ====================
+    "flash": {
+        "type": "pair",
+        "bs_in_out": [
+            [1, 1000, 16],
+            [1, 3000, 16],
+            [4, 1000, 16],
+            [4, 3000, 16]
+        ],
+        "server": {
+            "cmd": null,
+            "env": {
+                "MACA_LAUNCH_BLOCKING": 1,
+                "MHA_LOG_ENABLE": 1,
+                "MHA_PRINT_PARA": "ON",
+                "MHA_INPUT_COLLECTION": "{__LOG_PATH__}/{__FILE_NAME__}-tp{tp}-bs{bs}-in{input}-out{output}"
+            },
+            "extra_args": ["--no-enable-prefix-caching", "--enforce-eager"]
+        },
+        "client": {
+            "cmd": null,
+            "env": {},
+            "extra_args": []
+        }
+    }
+
+    // ==================== triton 任务：抓 triton kernel，按需添加 ====================
+    // 开启 cleanTritonCache 会在任务开始前清理 triton / vllm 编译缓存
+    // "triton": {
+    //     "type": "pair",
+    //     "cleanTritonCache": true,
+    //     "bs_in_out": [[1, 1000, 16]],
+    //     "server": {
+    //         "cmd": null,
+    //         "env": { "TRITON_ALWAYS_COMPILE": 1, "TRITON_KERNEL_DUMP": 1 },
+    //         "extra_args": ["--enforce-eager"]
+    //     },
+    //     "client": { "cmd": null, "env": {}, "extra_args": [] }
+    // }
+}
