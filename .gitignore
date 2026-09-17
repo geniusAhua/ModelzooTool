@@ -182,3 +182,6 @@ Thumbs.db
 _config
 
 default_cfg.conf
+
+# agent 本地知识库（不提交）
+.project-kb/
