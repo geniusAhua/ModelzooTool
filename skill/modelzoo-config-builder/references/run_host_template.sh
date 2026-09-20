@@ -14,8 +14,15 @@
 # 用法（宿主机上执行，不需要先进容器）：
 #   bash run_nvidia.sh <task> [task ...]      # 可多个任务，按顺序跑
 #   bash run_nvidia.sh --list                 # 列出 config 里的可用任务
-#   bash run_nvidia.sh <task> --dry-run       # 只打印将执行的 docker 动作
+#   bash run_nvidia.sh <task> --tag exp1      # 结果目录名加后缀（透传 ModelzooTool --tag）
+#   bash run_nvidia.sh <task> --dry-run       # 两层预演：① docker 动作；② 临时容器跑 main.py --dry-run
 #   bash run_nvidia.sh <task> --keep          # 跑完保留容器（调试）
+#
+# 与 ModelzooTool CLI 的对应（详见 SKILL.md §4.1）：
+#   --task / --config / -o  → 直接决定 main.py 的对应参数
+#   --tag                   → -e MODELZOO_TAG=<v> → 容器内脚本 → main.py --tag <v>
+#   --dry-run               → **不透传**；第二层预演去临时容器里跑 main.py --dry-run，
+#                             并打印「切用户后要配置的环境变量」（容器内脚本 --print-user-env）
 # ============================================================================
 set -uo pipefail
 
@@ -41,6 +48,7 @@ RUN_UID="$(id -u)"; RUN_GID="$(id -g)"; RUN_USER="$(id -un)"
 CONTAINER="${CONTAINER:-mz-run-${RUN_USER}}"
 KEEP="${KEEP:-0}"
 DRY_RUN="${DRY_RUN:-0}"
+TAG="${TAG:-}"                     # 透传给 ModelzooTool 的 --tag（结果目录名后缀）
 TASKS=()
 
 # =================== TODO 3: 选加速卡（配置里不要写死） ====================
@@ -55,11 +63,12 @@ usage() {
 用法:
   bash <本脚本> <task> [task ...]     # 跑指定任务（可多个，按顺序）
   bash <本脚本> --list                # 列出 config 里的可用任务
-  bash <本脚本> <task> --dry-run      # 只打印将执行的 docker 动作
+  bash <本脚本> <task> --tag <后缀>   # 结果目录名加后缀（透传 ModelzooTool --tag）
+  bash <本脚本> <task> --dry-run      # 两层预演：① docker 动作 ② 临时容器跑 main.py --dry-run
   bash <本脚本> <task> --keep         # 跑完保留容器
   bash <本脚本> --help
 
-可选参数: --task <name...> | --image <img> | --name <容器名> | --config <path> | --keep | --dry-run
+可选参数: --task <name...> | --tag <suffix> | --image <img> | --name <容器名> | --config <path> | --keep | --dry-run
 EOF
 }
 
@@ -80,6 +89,7 @@ while [ $# -gt 0 ]; do
         --image) IMAGE_OVERRIDE="$2"; shift 2 ;;
         --name)  CONTAINER="$2"; shift 2 ;;
         --config) CONFIG="$2"; shift 2 ;;
+        --tag)   TAG="$2"; shift 2 ;;
         --keep)  KEEP=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --list)  LIST=1; shift ;;
@@ -120,6 +130,7 @@ case "${VENDOR}" in
             -e no_proxy="${NO_PROXY:-localhost,127.0.0.1}"
             -e MODELZOO_RUN_UID="${RUN_UID}" -e MODELZOO_RUN_GID="${RUN_GID}"
             -e MODELZOO_RUN_USER="${RUN_USER}"
+            -e MODELZOO_TAG="${TAG}"
             -e PYTHONUNBUFFERED=1
         )
         ;;
@@ -149,9 +160,42 @@ if [ "${DRY_RUN}" = "0" ]; then
 fi
 
 # ============================== TODO 5: 起容器并跑 =========================
+# --dry-run 做**两层**预演（SKILL.md §4.1）：
+#   ① 宿主编排层：只打印 docker 动作（不 mkdir、不删容器；上面已跳过镜像存在性检查）
+#   ② 工具层    ：起一个**临时容器**跑 main.py --dry-run，打印渲染后的 server/client 命令、
+#                  将注入的环境变量，以及「切用户后要配置的环境变量」（调容器内脚本 --print-user-env）
+#   ⚠ ② 不经过容器内脚本的 root/su 阶段 ⇒ `su -` 那条链验不到（用手法见 SKILL.md §5）
+modelzoo_dry_run() {
+    local image="$1" tasks="$2"
+    local tag_arg=""
+    [ -n "${TAG}" ] && tag_arg="--tag '${TAG}'"
+    docker run --rm \
+        -v /sw_home:/sw_home -v /mxstorage:/mxstorage \
+        -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
+        --entrypoint /bin/bash "${image}" -c "
+            if ! python3 -c 'import json5' 2>/dev/null; then
+                echo '[dep] 临时容器内安装 ModelzooTool 依赖 json5 ...'
+                python3 -m pip config set global.index-url '${PIP_INDEX:-https://repo.metax-tech.com/r/pypi/simple}' >/dev/null
+                python3 -m pip config set install.trusted-host '${PIP_TRUSTED:-repo.metax-tech.com}' >/dev/null
+                python3 -m pip install -q json5
+            fi
+            echo '--------------------------------------------------------------------'
+            echo '[dry-run] 切用户后要配置的环境变量（由容器内脚本 --print-user-env 提供）:'
+            /bin/bash '${IN_CONTAINER}' --print-user-env | sed 's/^/    /'
+            echo '--------------------------------------------------------------------'
+            python3 '${MODELZOO_ENTRY}' --config '${CONFIG}' --task ${tasks} -o '${LOG_DIR}' --dry-run ${tag_arg}
+        "
+}
+
 if [ "${DRY_RUN}" = "1" ]; then
+    echo "[dry-run] ① 宿主编排层 —— 下面这些 docker 动作不会被执行："
+    echo "  docker rm -f ${CONTAINER}"
     echo "[dry-run] docker run"; printf ' %q' "${docker_args[@]}"; echo " ${IMAGE}"
     printf '  docker exec -i %q bash %q' "${CONTAINER}" "${IN_CONTAINER}"; printf ' %q' "${TASKS[@]}"; echo
+    echo
+    echo "[dry-run] ② 工具层 —— 真跑一次 ModelzooTool --dry-run（临时容器；宿主机可能没有 json5）："
+    echo
+    modelzoo_dry_run "${IMAGE}" "${TASKS[*]}" || warn "工具层 dry-run 失败（看上面输出）"
     exit 0
 fi
 
@@ -170,6 +214,7 @@ case "${VENDOR}" in
             -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \
             -e MODELZOO_RUN_UID="${RUN_UID}" -e MODELZOO_RUN_GID="${RUN_GID}" -e MODELZOO_RUN_USER="${RUN_USER}" \
             -e MODELZOO_BIN="${MODELZOO_ENTRY}" -e CONFIG="${CONFIG}" -e LOG_DIR="${LOG_DIR}" \
+            -e MODELZOO_TAG="${TAG}" \
             "${CONTAINER}" bash "${IN_CONTAINER}" "${TASKS[@]}"
         RC=$?
         [ "${KEEP}" = "1" ] || docker rm -f "${CONTAINER}" >/dev/null 2>&1
