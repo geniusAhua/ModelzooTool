@@ -377,12 +377,28 @@ def create_parser():
              "不启动任何进程（也不创建日志目录、不清 triton 缓存）"
     )
 
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        default=False,
+        help="列出 --config 中定义的所有任务名后退出（按配置书写顺序）。"
+             "必须同时提供 --config（--list 不会回落到默认配置）；不创建任何目录、不执行任务"
+    )
+
     return parser
 
 
 def main():
     parser = create_parser()
     args = parser.parse_args()
+
+    # --list：只列出 --config 里的任务名。放在最前面 → 不创建输出目录、不回落默认配置
+    if args.list:
+        if not args.config:
+            parser.error("--list 需要同时提供 --config <路径>（--list 不会回落到 bin/test/config.jsonc）")
+        for name in _Config(args.config).get_task_names():
+            print(name)
+        return
 
     result_dir = Path(args.output_dir).resolve()
     if args.dry_run:
