@@ -1,6 +1,8 @@
 import re
 import sys
 import argparse
+import math
+
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -13,7 +15,7 @@ console = Console()
 
 def parse_namespace_line(line: str) -> tuple[int | None, int | None]:
     """从 Namespace 行提取 input_len 和 output_len"""
-    match = re.search(r'\binput_len=(\d+).*?\boutput_len=(\d+)', line)
+    match = re.search(r'\brandom_input_len=(\d+).*?\brandom_output_len=(\d+)', line)
     if match:
         return int(match.group(1)), int(match.group(2))
     return None, None
@@ -112,7 +114,19 @@ def main():
 
     for idx, line in enumerate(lines):
         if "Traffic request rate:" in line:
-            JD_bs = int(float(line.strip().split(' ')[-1]))
+            try:
+                raw_str = line.strip().split(' ')[-1]
+                val_float = float(raw_str)
+                
+                if math.isinf(val_float) or math.isnan(val_float):
+                    raise ValueError(f"数值异常: {val_float}")
+
+                JD_bs = int(val_float)  
+                
+            except (ValueError, OverflowError) as e:
+                # 5. 异常处理：打印警告，并赋予一个安全的默认值（或选择 continue 跳过）
+                print(f"[Warning] 解析 JD_bs 失败! 原始值: '{raw_str}', 原因: {e}. 使用默认值 0.")
+                JD_bs = None  # 根据你的业务逻辑，这里可以设为 0、-1，或者直接 continue 跳过当前循环
 
         if "Namespace(" in line:
             il, ol = parse_namespace_line(line)
