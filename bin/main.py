@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, TYPE_CHECKING, Optional, List
 from multiprocessing import Process, Event
-from core.modelzooProcessor import ServerProc, ClientProc, DEFAULT_READY_TAG
+from core.modelzooProcessor import ServerProc, ClientProc, DEFAULT_READY_TAG, ModelzooProcess
 from core.config_parse import _Config
 from utils.command_builder import CommandBuilder
 from task.base_strategy import Case
@@ -189,7 +189,7 @@ def render_magic(template_obj: "list[str, dict]", **kwargs):
 
 
 
-def run_task(task_name: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
+def run_task(task_name: str, out_dir: Path, log_tag: 'Optional[str]', dry_run: bool = False) -> bool:
     config = _Config()
 
     available = config.get_task_names()
@@ -219,10 +219,20 @@ def run_task(task_name: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
 
     timestamp = time.strftime("%Y%m%d_%H_%M")
     log_dir = out_dir / f"{config.fileName}" / task_name / (timestamp + ('+'+log_tag if log_tag is not None else ''))
-    log_dir.mkdir(parents=True, exist_ok=True)
+    if dry_run:
+        print(f"\n{'#'*80}")
+        print(f"[dry-run] 任务 {task_name}: 只渲染命令与将配置的环境变量，不做任何执行")
+        print(f"[dry-run] 不创建日志目录、不清 triton 缓存、不启动 server/client")
+        print(f"[dry-run] 结果目录（本次不会创建）: {log_dir}")
+        print(f"{'#'*80}")
+    else:
+        log_dir.mkdir(parents=True, exist_ok=True)
 
     if config.should_clean_triton_cache(task_name):
-        clean_triton_cache()
+        if dry_run:
+            print(f"[dry-run] 配置了 cleanTritonCache，真正跑时会清 triton 缓存（本次跳过）")
+        else:
+            clean_triton_cache()
 
     is_e2e = (task_type == E2E_TASK_TYPE)
     is_pair_mode = not is_e2e
@@ -235,11 +245,12 @@ def run_task(task_name: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
             log_path = log_dir
         else:
             log_path = log_dir / f"bs{bs}-in{input_len}-out{output_len}"
-            log_path.mkdir(parents=True, exist_ok=True)
+            if not dry_run:
+                log_path.mkdir(parents=True, exist_ok=True)
 
         print(f"\n{'='*80}")
         print(f"[{task_name}] Case: bs={bs}, input={input_len}, output={output_len}")
-        print(f"日志路径: {log_path}")
+        print(f"日志路径: {log_path}" + ("（dry-run：未创建）" if dry_run else ""))
         print(f"{'='*80}")
 
         # 构建命令
@@ -263,15 +274,31 @@ def run_task(task_name: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
         client_log = str(log_path / client_log_name)
         server_log = str(log_path / server_log_name)
 
+        # 从外面继承的、与设备/框架相关的变量（如 CUDA_VISIBLE_DEVICES）——不在配置里，
+        # 但排查“这次跑在哪些卡上、带了哪些开关”时最关键（白名单见 ModelzooProcess）
+        inherited_env = sorted(
+            (k, str(v)) for k, v in env.items()
+            if ModelzooProcess._is_env_of_interest(k)
+            and k not in server_env and k not in client_env
+        )
+
         print(f"\n{'-'*100}")
-        print(f" [{task_name}-Server-ENV]: {' '.join([key + '=' + value for key,value in server_env.items()])} ")
+        if dry_run:
+            print(f" ★ dry-run：以下命令与环境变量不会被真正执行")
+        print(f" [{task_name}-Server-ENV]: {' '.join([key + '=' + value for key,value in server_env.items()]) or '<empty>'} ")
         print(f" [{task_name}-Server]: {server_cmd}")
-        print(f" [{task_name}-Client-ENV]: {' '.join([key + '=' + value for key,value in client_env.items()])} ")
+        print(f" [{task_name}-Client-ENV]: {' '.join([key + '=' + value for key,value in client_env.items()]) or '<empty>'} ")
         print(f" [{task_name}-Client]: {client_cmd}")
+        print(f" [{task_name}-ENV:inherited]: {' '.join([key + '=' + value for key,value in inherited_env]) or '<empty>'} ")
         if current_server_cmd:
             print(f" Server日志 → {server_log}")
         print(f" Client日志 → {client_log}")
         print(f"{'-'*100}")
+
+        if dry_run:
+            # 只渲染：推进 case 指针即可（server 是否启动已在上面的 should_start_server() 取过）
+            strategy.move_next()
+            continue
 
         success = start_modelzoo(
             task_name=task_name,
@@ -297,11 +324,14 @@ def run_task(task_name: str, out_dir: Path, log_tag: 'Optional[str]') -> bool:
 
     # ===================== E2E 特殊处理 =====================
     # 所有 Client 执行完后，清理 Server
-    if is_e2e:
+    if is_e2e and not dry_run:
         print(f"\n[{task_name}] 所有 Client 执行完毕，正在清理 Server 进程...")
         _cleanup_processes()
 
-    print(f"\n任务 {task_name} 执行完成\n")
+    if dry_run:
+        print(f"\n[dry-run] 任务 {task_name} 渲染完成（未执行任何命令）\n")
+    else:
+        print(f"\n任务 {task_name} 执行完成\n")
     return True
 
 
@@ -339,6 +369,14 @@ def create_parser():
         help = "log及结果输出目录，如果目录不存在则会自动创建目录"
     )
 
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="只渲染并打印每个 case 的 server/client 命令与将注入的环境变量，"
+             "不启动任何进程（也不创建日志目录、不清 triton 缓存）"
+    )
+
     return parser
 
 
@@ -347,7 +385,10 @@ def main():
     args = parser.parse_args()
 
     result_dir = Path(args.output_dir).resolve()
-    result_dir.mkdir(parents=True, exist_ok=True)
+    if args.dry_run:
+        print(f"[dry-run] 只渲染命令与环境变量，不执行；输出目录（本次不会创建）: {result_dir}")
+    else:
+        result_dir.mkdir(parents=True, exist_ok=True)
 
     log_tag = args.tag
 
@@ -377,7 +418,7 @@ def main():
             error_event.clear()
             _cleanup_processes()
 
-            if not run_task(name, result_dir, log_tag):
+            if not run_task(name, result_dir, log_tag, args.dry_run):
                 print(f"任务 {name} 失败，继续执行后续任务\n")
                 failed.append(name)
 
