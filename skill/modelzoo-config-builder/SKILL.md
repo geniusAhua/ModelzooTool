@@ -151,6 +151,8 @@ triton 编译缓存（老版本固定名 `TritonDump` 的自动清缓存行为�
    **按目标厂商各生成一套**（`VENDOR=nvidia|metax` 分支，见 §7），填 `user` / `uid` / `configs` /
    `ModelzooTool_entry_PATH` / `LOG_DIR` 等；外部评测工具（AISBench 等）的环境变量放它自己的
    `xxx_env.sh`，**不**放 jsonc 的 `client.env`（理由见 §6）。
+   ★ 模板已内置 **`--tag` 透传** 与 **两层 `--dry-run`**（含 `--print-user-env`，见 §4.1/§4.2），
+   生成时**不要删掉**这两项能力；也不要为了省事把 `su -` 改回 `su -s /bin/bash`。
 4. 给用户一份「如何跑 + 如何回退」说明。
 
 ## 4. 交付物
@@ -178,7 +180,84 @@ python "<ModelzooTool>/bin/main.py" --config "<config.jsonc>" --task <NAME> [<NA
 
 - `--task` 可跟**多个任务名**，按顺序执行；任务名取自 config 里的自定义任务段。
 - 某任务失败**只记录、不中断**，后续任务继续执行；全部跑完后若有失败，以**退出码 1** 结束。
-- 常用附加参数：`--tag <name>` 给日志目录追加后缀，便于区分批次。
+
+### 4.1 生成的脚本必须透传 ModelzooTool 的 CLI 参数
+
+`main.py` 的完整 CLI（`--help` 实测）：
+
+```
+usage: main.py [-h] [--config CONFIG] [--tag TAG] [--task NAME [NAME ...]]
+               [-o OUTPUT_DIR] [--dry-run]
+```
+
+生成的宿主机脚本**必须让用户能用上这些开关**（不能写死），职责划分：
+
+| CLI 参数 | 宿主机脚本要做什么 | 透传链路 |
+|---------|-------------------|----------|
+| `--task <name...>` | 接受位置参数或 `--task`，**可多个**（按顺序跑） | 位置参数 → 容器内脚本 → `main.py --task <name...>` |
+| `--config <path>` | 默认取同目录 `config.jsonc`，允许覆盖 | 环境变量 `CONFIG` → `main.py --config` |
+| `-o <dir>` | 脚本内定为 `LOG_DIR`（结果落点），允许覆盖 | 环境变量 `LOG_DIR` → `main.py -o` |
+| **`--tag <suffix>`** | **必须支持**：结果目录名后缀，同名任务跑多次时区分批次 | 宿主 `--tag` → `docker exec -e MODELZOO_TAG=<v>` → 容器内脚本 → `main.py --tag <v>`（**值为空时不传**） |
+| **`--dry-run`** | **必须支持**，且要做**两层**预演（见下） | **不进**容器内脚本 |
+| `--keep` | 跑完保留容器（调试）；两厂商语义不同，见 §7.1 | —— |
+
+#### `--tag` 的实现要点
+
+- 结果目录名会变成 `<时间戳>+<tag>`（ModelzooTool 行为），是区分同名任务多次运行**最省事**的办法。
+- **值为空时不要传** `--tag ""`（会生成带 `+` 结尾的怪目录）：容器内脚本里写
+  `[ -n "${MODELZOO_TAG}" ] && TAG_ARGS=(--tag "${MODELZOO_TAG}")`，然后 `"${TAG_ARGS[@]}"`。
+
+#### `--dry-run` 的实现要点（两层，缺一不可）
+
+| 层 | 做什么 | 为什么 |
+|----|--------|--------|
+| ① 宿主编排层 | 打印将执行的 `docker run` / `docker exec`（`printf ' %q'` 展开数组），**不 mkdir、不删容器、跳过镜像存在性检查** | 看清编排动作 |
+| ② 工具层 | 起一个**临时容器**跑 `main.py --dry-run`，打印渲染后的 server/client 命令 + 将注入的环境变量 | 只看①仍然不知道“真正会跑什么” |
+
+② 的三个坑：
+
+- **必须在容器里跑**：宿主机常常没有 ModelzooTool 的硬依赖 `json5`（沐曦机宿主 python3 就没有）
+  → 临时容器里按需 `pip install json5`（内网源）。
+- 临时容器用 `docker run --rm` + **不带 `--name`**，只挂共享盘 + 透传 `CUDA_VISIBLE_DEVICES`，
+  不建用户、不碰设备节点、不加载权重 ⇒ 不会撞同名正式容器。
+- 顺便把「**切用户后要配置的环境变量**」也打出来（调容器内脚本的 `--print-user-env`，见 §4.2）
+  —— 这样展示的内容与真实执行的**单一来源**，不会两边不同步。
+
+`main.py --dry-run` 自身保证：只渲染命令与环境变量，**不创建日志目录、不清 triton 缓存、不起 server/client**。
+
+#### ⚠️ `--dry-run` 验不到 `su -` 那条链
+
+宿主的 `--dry-run` **不经过容器内脚本**（它只在临时容器里跑 `main.py`），所以
+`su - <user>` / `USER_ENV` / 建用户 / 补组 这些**一步都不会走**。要验它们用「空壳容器 + 假任务名」（见 §5）。
+
+### 4.2 切用户与环境变量（`USER_ENV`）
+
+容器内脚本是两个阶段：**root 阶段** → `su - <user>` 切到执行用户 → 跑 `main.py`。
+
+**统一模式：把“切用户后要 export 的那一组”集中成一个 `USER_ENV`**（容器内脚本顶层定义）：
+
+```bash
+USER_ENV="export FOO=1; export PATH=...;"
+
+# 供宿主 dry-run 展示（只打印、不执行任务）
+if [ "${1:-}" = "--print-user-env" ]; then
+    printf '%s\n' "${USER_ENV}" | tr ';' '\n' | sed 's/^[[:space:]]*//; /^$/d'
+    exit 0
+fi
+...
+exec su - "${EXEC_USER}" -c "${USER_ENV} MODELZOO_RUN_UID='…' bash '${SELF}' ${TASKS}"
+```
+
+硬性规则（用户 2026-09-18 定，两平台统一）：
+
+- 切用户一律用 **`su - <user>`（login shell）**，**不要**用 `su -s /bin/bash <user> -c "PATH='$PATH' …"`。
+- 属组统一 **`video` + `root`**；要再加别的组（如 `/dev/mem` 需要的 `kmem`）**必须先问用户**。
+- **HOME 不迁移**：`useradd -m`（容器内 `/home/<user>`），绝不用 `-d` 指到宿主共享盘。
+- `USER_ENV` 的内容按厂商定：**MetaX** 见 §7.2；**NVIDIA** 无平台专用变量，只需把「框架 CLI / python
+  所在目录」补回 PATH。
+
+> 为什么要有 `--print-user-env`：宿主脚本的 `--dry-run` 不经过容器内脚本（§4.1），靠它才能把
+> 「切用户后到底会 export 什么」展示出来，而且**单一来源**（不会两边不同步）。
 
 ## 5. 校验（不改代码、不真跑）
 
@@ -199,6 +278,28 @@ python -c "import json5,sys; json5.load(open(sys.argv[1]))" config.jsonc
 bash -n run_nvidia.sh run_in_container_nvidia.sh run_metax.sh run_in_container_metax.sh
 ```
 
+再跑一次**脚本自己的 `--dry-run`**（两层预演，见 §4.1）—— 它能顺带暴露渲染错误、镜像不存在、
+任务名拼错，以及「切用户后会 export 什么」：
+
+```bash
+bash run_nvidia.sh <framework> <task> --dry-run
+```
+
+最后用**「空壳容器 + 假任务名」验 `su -` 那条链**（`--dry-run` 走不到它，见 §4.1）：
+**不挂任何 GPU 设备**起一个空壳容器，`docker exec` 带齐宿主脚本平时会传的 `-e`，执行容器内脚本 +
+一个**假任务名**（工具会在参数校验阶段就报错退出 ⇒ 不起 server、不加载权重，0 GPU 占用、几秒完成）：
+
+```bash
+docker run -d --name mz-probe --entrypoint bash -v /sw_home:/sw_home <镜像> -c 'sleep 600'
+docker exec -e MODELZOO_RUN_UID="$(id -u)" -e MODELZOO_RUN_GID="$(id -g)" -e MODELZOO_RUN_USER="$(id -un)" \
+    -e MODELZOO_BIN=<ModelzooTool>/bin/main.py -e CONFIG=<config.jsonc> -e LOG_DIR=<LOG_DIR> \
+    mz-probe bash <容器内脚本> __probe_nonexistent__
+docker rm -f mz-probe
+```
+
+看到 `[user] 当前执行用户: …`、`HOME=/home/<user>`、`PATH=…`（MetaX 还要有 `MACA_PATH=…`）
+就说明切用户与环境变量都对了。
+
 再做「不启动进程」的渲染自检：用 `str.format_map` 复刻
 `bin/utils/command_builder.py` 的上下文（`task_info` 的所有键 +
 `bs/input/output/prompts/modelPath/__LOG_PATH__/__FILE_NAME__`），并让
@@ -216,15 +317,18 @@ bash -n run_nvidia.sh run_in_container_nvidia.sh run_metax.sh run_in_container_m
   可能把镜像自带的 numpy / torch / vllm / sglang 顶掉（版本或 ABI 不匹配就 import 失败）。
   只对齐 **uid/gid**（保证产物属主正确）就够了 —— 正确写法见 `references/run_template.sh`：
   `useradd -m -l -u ${uid} -s /bin/bash ${user}`（`-m` 不指向任何宿主路径）。
-- **⚠️ 切用户用「非 login」的 `su -s /bin/bash <user> -c "PATH='$PATH' ..."`，不要用 `su - <user>`**：
-  `su -` 是 login shell，会读 `/etc/profile`（里面是**硬编码 PATH**）把 Docker ENV 额外追加的 PATH 段
-  整个覆盖掉 —— SGLang 镜像的 `/opt/sglang/bin`（`sglang` CLI + 带 torch 的解释器）会丢失
-  （`sglang` 找不到、裸 `python3` 退回 `/usr/bin/python3`），而 SGLang 压测入口恰恰是
-  `python3 -m sglang.benchmark.serving`；vLLM 镜像也会丢 `/usr/local/nvidia/bin`、`/usr/local/cuda/bin`。
-  非 login 的 `su -c`（外加显式带 `PATH=`）才能让 sglang/vllm 找到。
-  附带坑：`su - <user> -c ...` 是 login 但**非交互**，`~/.profile` source `~/.bashrc` 时会被
-  开头的 `case $- in *i*) ;; *) return;; esac` 直接 return —— 所以「迁 HOME 换 conda/ais_bench 可用」
-  在自动化编排里根本不成立（只有手动交互登录才生效），不要为了这个去动 HOME。
+- **⚠️ 切用户一律用 `su - <user>`（login shell），不要用 `su -s /bin/bash <user> -c "PATH='$PATH' …"`**
+  （用户 2026-09-18 裁定，两平台统一）；属组统一 **`video` + `root`**（要再加别的组必须先问用户）；
+  HOME 只对齐 uid/gid、**不迁移**（见上一条）。
+  **为什么不再用非 login 写法**（实测，两个沐曦镜像）：`su -` 确实会重置 PATH，但**镜像自带的 conda
+  配置在 `/etc/profile.d/`，login shell 会读** ⇒ `/opt/conda/bin` 仍在 PATH 里
+  （`python3`/`pip3`/`vllm`/`sglang` 都能找到，`HOME=/home/<user>`）。
+  真正会被清掉的是 **Docker ENV 里额外追加的目录**：MetaX 的 `/opt/maca/*`、`/opt/mxdriver/bin`，
+  以及某些镜像的 `/opt/sglang/bin`、`/usr/local/cuda/bin` ⇒ **统一做法是：切用户后由一份 `USER_ENV`
+  显式补回来**（MetaX 见 §7.2；NVIDIA 只需把「框架 CLI / python 所在目录」前置回 PATH）。模式见 §4.2。
+  附带坑：`su - <user> -c ...` 是 login 但**非交互** —— `/etc/profile.d/*.sh` 会读，而
+  `~/.bashrc` 在开头的 `case $- in *i*) ;; *) return;; esac` 处直接 return。所以「迁 HOME 换
+  conda/ais_bench 可用」在自动化编排里**根本不成立**（只有手动交互登录才生效），别为了这个去动 HOME。
 - **任务段缺 `type`** → 工具直接报「缺少 type 字段」，整个任务不执行。
 - **字面量 `{}` 未转义** → 渲染期 `Missing` 报错。写成 `{{}}`。
 - **保留名被 task_info 覆盖**：`input`/`output`/`bs`/`port` 等别和保留名冲突。
@@ -237,8 +341,9 @@ bash -n run_nvidia.sh run_in_container_nvidia.sh run_metax.sh run_in_container_m
   `"cleanTritonCache": true`。
 - **client 固定命令 vs 覆盖命令**：只想改参数就用 `extra_args`，想换整条命令才写 `cmd`。
 - **`$((...))` 不要被 JSON 转义破坏**：保持原样写进字符串即可。
-- **run.sh 使用未加引号的 heredoc**（`<< EOF`），`$cmd` 会在外层展开后在目标用户下执行；
-  脚本内 `${MACA_PATH}` 等也依赖外层环境，如目标机变量不同请同步修改。
+- **容器内脚本用 `su - <user> -c "<命令字符串>"` 传递**（不再用 heredoc），所以字符串里的 `$` 要
+  注意转义层级：让它在**切用户后才展开**就写 `\$PATH`；想在**当前 shell 就展开**就直接写 `${VAR}`。
+  `USER_ENV` 里的 `${MACA_PATH}` / `$PATH` 属于前者（延迟展开）—— 写错了会得到一堆空值而不是报错。
 - **config 文件名即 `{__FILE_NAME__}`**：会给日志目录带来一层以文件名命名的子目录，
   命名时保持可读。
 - **client 若调用 AISBench（mmengine 系工具），别在它的配置文件里 `import os` 后用环境变量**：
@@ -284,19 +389,36 @@ bash -n run_nvidia.sh run_in_container_nvidia.sh run_metax.sh run_in_container_m
 | pip 源 | 视机器而定 | 内网源 `https://repo.metax-tech.com/r/pypi/simple`（+ `install.trusted-host repo.metax-tech.com`） |
 | 容器生命周期 | `--rm`，退出即删 | `docker run -dit` + `docker exec`，跑完 `docker rm -f`（`--keep` 可留） |
 
-两家都要遵守的：**只对齐 uid/gid、不对齐 HOME**；切用户用**非 login** 的
-`su -s /bin/bash <user> -c "PATH='$PATH' …"`（原因见 §6）。
+两家都要遵守的：**只对齐 uid/gid、不对齐 HOME**；切用户统一用 **`su - <user>`（login shell）**，
+切用户后要 export 的环境变量集中成 `USER_ENV`（模式与硬性规则见 §4.2）。
 
-### 7.2 MetaX 默认环境变量
+### 7.2 MetaX 的环境变量（即 `USER_ENV` 的内容）
 
-在容器内「执行用户阶段」export（**不要**写进 `.bashrc` —— 非交互路径不读它）：
+在容器内「执行用户阶段」export（**不要**写进 `.bashrc` —— 非交互路径不读它）。顺序与写法照抄：
 
 ```bash
 export MACA_PATH=/opt/maca
 export MACA_SMALL_PAGESIZE_ENABLE=1
-export MACA_DIRECT_DISPATCH=1
 export LD_LIBRARY_PATH=/opt/mxdriver/lib:${MACA_PATH}/lib:${MACA_PATH}/ompi/lib:${MACA_PATH}/mxgpu_llvm/lib:${LD_LIBRARY_PATH}
-export PATH=${MACA_PATH}/bin:${PATH}
+export PATH=${MACA_PATH}/bin/:$PATH
+export MACA_DIRECT_DISPATCH=1
+```
+
+- **为什么必须 export**：`su -` 是 login shell，会把 Docker ENV 里追加的 `/opt/maca/*`、
+  `/opt/mxdriver/bin` 清掉（2026-09-18 实测）；而 `/opt/conda/bin` **会**保留（镜像的 conda 配置在
+  `/etc/profile.d/`，login shell 会读）⇒ `python3`/`pip3`/`vllm`/`sglang` 不会丢。
+- **NVIDIA 平台没有这类专用变量** ⇒ 它的 `USER_ENV` 只需把「框架 CLI / python 所在目录」补回 PATH：
+
+```bash
+# 在容器内（PATH 还是 Docker ENV 那份）探测一次，去重后前置回 PATH
+_fw_dirs=""
+for _c in vllm sglang python3; do
+    _b="$(command -v "${_c}" 2>/dev/null)" || continue
+    [ -n "${_b}" ] || continue
+    _d="$(dirname "${_b}")"
+    case ":${_fw_dirs}:" in *":${_d}:"*) ;; *) _fw_dirs="${_d}:${_fw_dirs}" ;; esac
+done
+USER_ENV="export PATH='${_fw_dirs%:}':\$PATH;"   # 该目录本来就在 login PATH 里时只是重复，无副作用
 ```
 
 ### 7.3 MetaX 侧的常见坑
