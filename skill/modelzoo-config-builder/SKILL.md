@@ -187,13 +187,14 @@ python "<ModelzooTool>/bin/main.py" --config "<config.jsonc>" --task <NAME> [<NA
 
 ```
 usage: main.py [-h] [--config CONFIG] [--tag TAG] [--task NAME [NAME ...]]
-               [-o OUTPUT_DIR] [--dry-run]
+               [-o OUTPUT_DIR] [--dry-run] [--list]
 ```
 
 生成的宿主机脚本**必须让用户能用上这些开关**（不能写死），职责划分：
 
 | CLI 参数 | 宿主机脚本要做什么 | 透传链路 |
 |---------|-------------------|----------|
+| **`--list`** | **建议支持**：列出 config 里的任务名后退出（工具层 cmd 是 `main.py --config <cfg> --list`，**必须**同时给 `--config`，不会回落默认配置；不创建目录、不跑任务） | 宿主脚本可自己静态解析任务名（不依赖 python/json5，适合裸宿主机），也可在容器里调 `main.py --list`；两者必须一致 |
 | `--task <name...>` | 接受位置参数或 `--task`，**可多个**（按顺序跑） | 位置参数 → 容器内脚本 → `main.py --task <name...>` |
 | `--config <path>` | 默认取同目录 `config.jsonc`，允许覆盖 | 环境变量 `CONFIG` → `main.py --config` |
 | `-o <dir>` | 脚本内定为 `LOG_DIR`（结果落点），允许覆盖 | 环境变量 `LOG_DIR` → `main.py -o` |
