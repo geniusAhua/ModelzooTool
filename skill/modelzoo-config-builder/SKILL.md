@@ -271,7 +271,7 @@ python -c "import json5,sys; json5.load(open(sys.argv[1]))" config.jsonc
 ```
 
 若本机没有 `json5` 模块：去掉 `//` 注释后用 `json.loads` 解析即可
-（注意别误伤字符串里的 `https://`）。
+（注意别误伤字符串里的 URL 写法）。
 
 生成的脚本也要静态检查（不跑任务、不起容器）：
 
@@ -291,7 +291,7 @@ bash run_nvidia.sh <framework> <task> --dry-run
 一个**假任务名**（工具会在参数校验阶段就报错退出 ⇒ 不起 server、不加载权重，0 GPU 占用、几秒完成）：
 
 ```bash
-docker run -d --name mz-probe --entrypoint bash -v /sw_home:/sw_home <镜像> -c 'sleep 600'
+docker run -d --name mz-probe --entrypoint bash -v <共享盘>:<共享盘> <镜像> -c 'sleep 600'
 docker exec -e MODELZOO_RUN_UID="$(id -u)" -e MODELZOO_RUN_GID="$(id -g)" -e MODELZOO_RUN_USER="$(id -un)" \
     -e MODELZOO_BIN=<ModelzooTool>/bin/main.py -e CONFIG=<config.jsonc> -e LOG_DIR=<LOG_DIR> \
     mz-probe bash <容器内脚本> __probe_nonexistent__
@@ -387,7 +387,7 @@ docker rm -f mz-probe
 | 框架命令的 PATH | 镜像 ENV 里已有 `sglang` / `vllm` | **非交互路径没有**：`vllm`/`pip`/`python3` 在 `/opt/conda/bin`（交互式才由 `/etc/profile.d/conda.sh` 加进去）→ 容器内先探测并前置，再用与 vllm 同目录的解释器 |
 | 设备权限 | `--gpus` 已处理 | `/dev/dri`、`/dev/mxcd` 属 `root:video(660)`，而 `su` 会按 `/etc/group` **重置补组** → 执行用户必须 `usermod -aG video,root`（缺组会 `get device failed` → Segmentation fault） |
 | 厂商环境变量 | 一般不需要 | 默认 export `MACA_*`（见 7.2） |
-| pip 源 | 视机器而定 | 内网源 `https://repo.metax-tech.com/r/pypi/simple`（+ `install.trusted-host repo.metax-tech.com`） |
+| pip 源 | 视机器而定 | 机器可达的 pip 源（如内网源，需同时设 `install.trusted-host <host>`） |
 | 容器生命周期 | `--rm`，退出即删 | `docker run -dit` + `docker exec`，跑完 `docker rm -f`（`--keep` 可留） |
 
 两家都要遵守的：**只对齐 uid/gid、不对齐 HOME**；切用户统一用 **`su - <user>`（login shell）**，
@@ -451,7 +451,7 @@ USER_ENV="export PATH='${_fw_dirs%:}':\$PATH;"   # 该目录本来就在 login P
 }
 ```
 
-- DeepSeek-V4.1-Flash @ MetaX C600 **需要这 4 个**（用户 2026-09-16 确认）——可作写法模板，
+- DeepSeek-V4.1-Flash @ MetaX **需要这 4 个**（用户 2026-09-16 确认）——可作写法模板，
   但别的模型必须重新确认，不要照抄。
 - **对 NVIDIA 无效但无害**：被框架忽略，不影响执行与性能 ⇒ 不做平台分支，两家共用一份 config。
 - 值写 `1`（数字）或 `"1"`（字符串）都行：ModelzooTool `_merge_env`

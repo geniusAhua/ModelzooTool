@@ -58,6 +58,10 @@ GPU_NVIDIA="${GPU_NVIDIA:-all}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 export CUDA_VISIBLE_DEVICES
 
+# 要挂进容器的宿主共享目录（按机器填）：直接把 docker 的 -v 参数写进来，多个用空格分隔
+#   例：MOUNT_ARGS="-v /data:/data -v /models:/models"；不需要挂载就留空
+MOUNT_ARGS="${MOUNT_ARGS:-}"
+
 usage() {
     cat <<'EOF'
 用法:
@@ -125,9 +129,7 @@ case "${VENDOR}" in
             "${rm_arg[@]}" --gpus "${GPU_NVIDIA}"
             --network host --ipc host --shm-size 64g --privileged
             --ulimit memlock=-1:-1
-            -v /sw_home:/sw_home -v /mxstorage:/mxstorage
-            -e http_proxy="${PROXY:-}" -e https_proxy="${PROXY:-}"
-            -e no_proxy="${NO_PROXY:-localhost,127.0.0.1}"
+            ${MOUNT_ARGS}
             -e MODELZOO_RUN_UID="${RUN_UID}" -e MODELZOO_RUN_GID="${RUN_GID}"
             -e MODELZOO_RUN_USER="${RUN_USER}"
             -e MODELZOO_TAG="${TAG}"
@@ -138,14 +140,14 @@ case "${VENDOR}" in
         IMAGE="${IMAGE_OVERRIDE:-${IMAGE_METAX}}"
         IN_CONTAINER="${IN_CONTAINER_METAX}"
         # MetaX：设备节点必须挂（/dev/dri /dev/mxcd /dev/infiniband）+ --group-add video
-        #   --device=/dev/mem：部分算子/工具需要；--network=host：client 直连 127.0.0.1
+        #   --device=/dev/mem：部分算子/工具需要；--network=host：client 直连本机
         docker_args=(
             -dit --name "${CONTAINER}"
             --device=/dev/dri --device=/dev/mxcd --device=/dev/infiniband --group-add video
             --uts=host --ipc=host --device=/dev/mem --network=host
             --security-opt apparmor=unconfined --security-opt seccomp=unconfined
             --shm-size 100gb --ulimit memlock=-1
-            -v /sw_home:/sw_home -v /mxstorage:/mxstorage
+            ${MOUNT_ARGS}
             -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}"
             -e MODELZOO_RUN_UID="${RUN_UID}" -e MODELZOO_RUN_GID="${RUN_GID}" -e MODELZOO_RUN_USER="${RUN_USER}"
             -e PYTHONUNBUFFERED=1
@@ -170,13 +172,13 @@ modelzoo_dry_run() {
     local tag_arg=""
     [ -n "${TAG}" ] && tag_arg="--tag '${TAG}'"
     docker run --rm \
-        -v /sw_home:/sw_home -v /mxstorage:/mxstorage \
+        ${MOUNT_ARGS} \
         -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}" \
         --entrypoint /bin/bash "${image}" -c "
             if ! python3 -c 'import json5' 2>/dev/null; then
                 echo '[dep] 临时容器内安装 ModelzooTool 依赖 json5 ...'
-                python3 -m pip config set global.index-url '${PIP_INDEX:-https://repo.metax-tech.com/r/pypi/simple}' >/dev/null
-                python3 -m pip config set install.trusted-host '${PIP_TRUSTED:-repo.metax-tech.com}' >/dev/null
+                [ -n '${PIP_INDEX}' ] && python3 -m pip config set global.index-url '${PIP_INDEX}' >/dev/null
+                [ -n '${PIP_TRUSTED}' ] && python3 -m pip config set install.trusted-host '${PIP_TRUSTED}' >/dev/null
                 python3 -m pip install -q json5
             fi
             echo '--------------------------------------------------------------------'
