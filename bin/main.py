@@ -45,16 +45,18 @@ def clean_triton_cache():
     print(" Triton 缓存目录，清理完成")
 
 
-ready_event = Event()  # Server, Client进程间通信, 只要需要启动Server就要重置
-error_event = Event()  # 异常通知, 无需重置, set了就结束整个工具
-server_p: 'Process' = None
-client_p: 'Process' = None
-
-
-ready_event = Event()
+# error_event: 异常通知，跨任务复用（每个任务开始前会 clear）。
 error_event = Event()
 server_p: Optional[Process] = None
 client_p: Optional[Process] = None
+
+# 注意：**不再**保留全局 ready_event。
+# multiprocessing 的 Event/Condition 靠内部 semaphore 计数配对「等待者」与「唤醒」。
+# 若某个等待者（上一个 case 的 client 子进程）卡在 wait() 时被 SIGTERM/SIGKILL 强杀
+# （清理进程、任务失败、Ctrl+C 都会这样），计数就永久失衡 —— 之后 server 侧 set()
+# 发出的唤醒会落到“已死的等待者”身上，新 client 永远收不到通知。
+# 症状：**server 日志里明明打印了 readyTag，client 却迟迟不启动（整个工具静默卡住）**。
+# 所以 start_modelzoo 改成「每个 case 新建一个 Event，用完即弃」，从根上隔离污染。
 
 
 def start_modelzoo(
@@ -75,14 +77,17 @@ def start_modelzoo(
     """
     global server_p, client_p
 
+    # 每个 case 一个全新 Event（原因见文件上方注释）：绝不复用跨 case 的 event，
+    # 避免上一个 case 的 client 被强杀后污染 semaphore 计数、导致本次 set() 唤不醒 client。
+    case_ready_event = Event()
+
     try:
         # 创建 Server 进程（如果需要）
         if server_cmd:
-            ready_event.clear()
             server_runner = ServerProc(
                 cmd=server_cmd,
                 env=env,
-                ready_event=ready_event,
+                ready_event=case_ready_event,
                 error_event=error_event,
                 log_path=server_log,
                 ready_tag=ready_tag if ready_tag is not None else DEFAULT_READY_TAG,
@@ -90,12 +95,22 @@ def start_modelzoo(
             )
             server_p = Process(target=server_runner.start, daemon=True)
             server_p.start()
+        else:
+            # 本次复用上一个 case 的 server（e2e 的非首个 case 走这里）。
+            # 必须显式确认 server 还在，否则 client 会一直等下去（静默卡死）。
+            if not (server_p and server_p.is_alive()):
+                print(f"[错误] 任务 {task_name}: 本 case 没有要启动的 server"
+                      f"（e2e 的后续 case 会复用 server），但当前没有可复用的存活 server，"
+                      f"client 不会启动。请检查配置里该任务的 server.cmd 是否存在。")
+                return False
+            # 复用 server：本次无需等待，直接置位（对本次这个全新 Event 而言）
+            case_ready_event.set()
 
         # 创建 Client 进程
         client_runner = ClientProc(
             cmd=client_cmd,
             env=env,
-            ready_event=ready_event,
+            ready_event=case_ready_event,
             error_event=error_event,
             log_path=client_log,
             task_env=client_env
@@ -110,11 +125,11 @@ def start_modelzoo(
                 _cleanup_processes()
                 return False
 
-            if ready_event.is_set():
+            if case_ready_event.is_set():
                 break
 
             # Server 意外退出但没发 ready
-            if server_p and not server_p.is_alive() and not ready_event.is_set():
+            if server_p and not server_p.is_alive() and not case_ready_event.is_set():
                 print("Server 进程意外退出！")
                 error_event.set()
                 continue
@@ -430,7 +445,8 @@ def main():
     try:
         for name in task_names:
             # 每个任务开始前清空错误标志并清理残留进程，
-            # 保证前一个任务的失败不会影响后续任务的启动
+            # 保证前一个任务的失败（尤其是 server 未就绪就退出）不会污染后续任务。
+            # 注意：无需再重置 ready 标志 —— 每个 case 都用自己的 Event（见 start_modelzoo）。
             error_event.clear()
             _cleanup_processes()
 

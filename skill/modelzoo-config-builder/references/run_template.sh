@@ -56,9 +56,9 @@ RUN_GID="${MODELZOO_RUN_GID:-}"
 RUN_USER="${MODELZOO_RUN_USER:-}"
 
 # ============================== TODO 3: pip 源 ==============================
-# 内网镜像（PyPI 直连可能超时）；公网机器换成公司/官方源或留空
-PIP_INDEX="${PIP_INDEX_OVERRIDE:-https://repo.metax-tech.com/r/pypi/simple}"
-PIP_TRUSTED="${PIP_TRUSTED_OVERRIDE:-repo.metax-tech.com}"
+# 用机器可达的 pip 源（直连 PyPI 可能超时）；地址由用户/机器决定，留空则用官方默认
+PIP_INDEX="${PIP_INDEX_OVERRIDE:-}"
+PIP_TRUSTED="${PIP_TRUSTED_OVERRIDE:-}"
 
 # ====================== 切用户后要配置的环境变量（USER_ENV） ================
 # 统一模式：把“切用户后要 export 的那一组”集中在这里，由下面的 `su -c "${USER_ENV} …"` 注入；
