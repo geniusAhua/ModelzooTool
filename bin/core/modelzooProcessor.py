@@ -139,7 +139,7 @@ class ServerProc(ModelzooProcess):
     def _log_check(self, line):
         if not self._ready_event.is_set() and self._ready_tag and self._ready_tag in line:
             self._ready_event.set()
-            print(f"Server 已就绪（命中标志: {self._ready_tag}）→ 通知 Client 可以启动")
+            print(f"Server 已就绪（命中标志: {self._ready_tag}）→ 通知 Client 可以启动", flush=True)
 
         if "CUDA out of memory" in line or "Segmentation fault" in line:
             raise RuntimeError(f"检测到严重错误: {line}")
