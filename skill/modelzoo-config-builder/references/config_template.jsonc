@@ -8,6 +8,12 @@
     //   3) 各任务段                          —— 名字自定，必须含 type；
     //                                          只保留需要的，不需要的整段删除
     //
+    // ⚠️ 动手前必须逐条向用户确认这 7 项（用户 2026-10-13 要求，见 SKILL.md「⚠️ 必问清单」）：
+    //   ① 是否开启 cudagraph      ② 是否关闭 prefix cache      ③ mem-fraction / gpu-memory-utilization 取多少
+    //   ④ readyTag 用默认/继承/自定义   ⑤ client 是否 --ignore-eos
+    //   （SGLang bench 默认开 ignore-eos；vLLM bench 默认不开）
+    //   ⑥ 最终环境变量逐条复核     ⑦ 最终命令参数逐条复核
+    //
     // 任务段约定（顶层除保留键 modelPath / modelName / readyTag / task_info /
     // server / client 外，任意顶层 object 都是任务段）：
     //   - "type": "e2e"   只启动一次 server，串行跑完所有 case
@@ -24,9 +30,9 @@
     "modelPath": "/path/to/model",
 
     // server 启动完成标志：顶层为全局默认，任务段内写 readyTag 可覆盖（与 type 同级）。
-    // 支持字符串或字符串数组（命中任意一个即视为就绪）。
-    // 默认 "Application startup complete"（vLLM 适用）；非 vLLM 服务（如 uvicorn/SGLang）
-    // 请按服务自身的就绪日志改这里，或在该任务段内单独覆盖。
+    // ⚠️ 只支持【单个字符串】（62650ec 起）；写数组会在加载配置时直接 ValueError。
+    // 取用顺序：任务段的 readyTag > 顶层 readyTag > 默认 "Application startup complete"（vLLM 适用）。
+    // 非 vLLM 服务（如 uvicorn/SGLang）请按服务自身的就绪日志改这里，或在该任务段内单独覆盖。
     "readyTag": "Application startup complete",
 
     // 自定义可填充项：命令 / env / extra_args 中用 {key} 引用
@@ -61,8 +67,8 @@
         "bs_in_out": [
             [0, 0, 0]
         ],
-        // 需要覆盖 server 就绪标志时，在本层（与 type 同级）写 readyTag，支持数组：
-        // "readyTag": ["Application startup complete", "Uvicorn running on"],
+        // 需要覆盖 server 就绪标志时，在本层（与 type 同级）写 readyTag —— ⚠️ 只能单个字符串：
+        // "readyTag": "The server is fired up and ready to roll!",   // 例：SGLang
         "server": {
             "cmd": null,          // null = 用默认命令
             "env": {},

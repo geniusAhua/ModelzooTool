@@ -1,6 +1,6 @@
 ---
 name: modelzoo-config-builder
-description: 为 ModelzooTool 启发式生成 config.jsonc 与执行 bash 脚本。当用户想跑 vllm/推理服务的端到端压测、Profiler 或 TlasShape/BlasShape/FlashAttnShape/Triton 抓取，或提到"生成 Modelzoo config""写个跑 ModelzooTool 的脚本""server 命令 + client 命令""--task"时使用。用户只需提供环境变量、server 命令、client 命令，其余通过启发式提问与自动推导补全。
+description: 为 ModelzooTool 启发式生成 config.jsonc 与执行 bash 脚本。当用户想跑 vllm/推理服务的端到端压测、Profiler 或 TlasShape/BlasShape/FlashAttnShape/Triton 抓取，或提到"生成 Modelzoo config""写个跑 ModelzooTool 的脚本""server 命令 + client 命令""--task"时使用。用户只需提供环境变量、server 命令、client 命令，其余通过启发式提问与自动推导补全。⚠️ 创建任务前必须逐条弹框确认 7 项（cudagraph 开/关、prefix cache 关/不关、mem-fraction 或 gpu-memory-utilization 取值、readyTag 用默认/继承/自定义、client 是否 --ignore-eos、最终环境变量复核、最终命令参数复核），并在开跑前把最终 env 与命令复述给用户确认。
 ---
 
 # ModelzooTool 配置生成器
@@ -14,6 +14,44 @@ MetaX（沐曦）用 `run_metax.sh` + `run_in_container_metax.sh` —— 差异�
 其余字段（`modelPath`、`task_info`、`readyTag`、任务段（名字与 `type`）、
 `bs_in_out`、`extra_args`、脚本骨架）由你**先从命令里推导，再启发式补问**，
 不要一上来就让用户填 JSON。
+
+## ModelzooTool 的 CLI 参数（速查 —— 写配置 / 生成脚本前先看这一节）
+
+入口固定是 `bin/main.py`，`--help` 实测输出：
+
+```
+usage: main.py [-h] [--config CONFIG] [--tag TAG] [--task NAME [NAME ...]]
+               [-o OUTPUT_DIR] [--dry-run] [--list]
+```
+
+| 参数 | 默认值 | 说明与注意事项 |
+|------|--------|----------------|
+| `--config <路径>` | `None` ⇒ **回落 `bin/test/config.jsonc`**（仓库自带的示例配置，**不是**用户自己的配置） | 指定要跑的 JSON5 配置。⚠️ 生成脚本时把它做成「默认取同目录 `config.jsonc`、允许覆盖」，否则会静默跑到示例配置上 |
+| `--task <名字...>` | `None` | **可跟多个任务名**，按顺序执行；名字取自配置里的自定义任务段。缺省、或名字不存在，都会 `parser.error` **并列出配置里的全部任务名**（可顺带当"列任务"用） |
+| `-o, --output-dir <目录>` | `bin/../result` | 日志与结果根目录，不存在会自动创建。实际落点见下方"结果目录" |
+| `--tag <后缀>` | `None`（纯时间戳命名） | 加在**结果目录名末尾**，用于区分同名任务的多次运行。⚠️ **值为空时不要传**（会生成带 `+` 结尾的怪目录），写法见 §4.1 |
+| `--dry-run` | `False` | **只渲染并打印**每个 case 的 server/client 命令与将注入的环境变量；**不启动任何进程、不建日志目录、不清 triton 缓存**。本技能里「零成本自检 + 开跑前回执确认」主要靠它（见 §3 步骤 4、§5） |
+| `--list` | `False` | 列出 `--config` 里定义的所有任务名（按配置书写顺序）后退出；**必须同时给 `--config`**（它**不会**回落默认配置）；不建目录、不跑任务 |
+| `-h, --help` | — | 打印帮助（本节的 usage 即来自它） |
+
+**任务类型不是 CLI 参数**，而是写在配置的任务段里（`--task` 的 help 会顺带打印）：
+`e2e`（只启动一次 server，串行跑完所有 case）／`pair`（每个 case 一对 server+client，每 case 重启 server）。
+
+**标准执行入口**：
+
+```bash
+python "<ModelzooTool>/bin/main.py" --config "<config.jsonc>" --task <NAME> [<NAME> ...] \
+    -o "<LOG_DIR>" [--tag <后缀>]
+```
+
+**行为约定**（生成脚本时要用到）：
+
+- 某任务失败**只记录、不中断**，后续任务继续执行；全部跑完后若有失败，以**退出码 1** 结束。
+- **结果目录**：`<LOG_DIR>/<config 文件名>/<任务名>/<时间戳[+tag]>/`，
+  内含 `Server-*.log`（服务端）与 `Client-*.log`（客户端）。
+- `--list` 与 `--dry-run` **都不创建任何目录**，可以在裸宿主机上放心试。
+- 生成的宿主机脚本**必须能透传这些开关**（尤其 `--tag` 与两层 `--dry-run`）；
+  职责划分与实现要点见 §4.1。
 
 ## 0. 用户输入（只问这三样）
 
@@ -74,7 +112,43 @@ triton 编译缓存（老版本固定名 `TritonDump` 的自动清缓存行为�
    —— 它们对 NVIDIA 无效但无害，所以写进共用 config、不做平台分支，详见 §7.4。
 5. 命令里含义不明的参数：不确定是"固定参数"还是"随 case 变"时，问一句，别猜。
 
+6. **【7 项必问清单】创建任何任务前，这 7 项必须逐条弹对话框问（用户 2026-10-13 要求，一项都不能省）**：
+   ① cudagraph 开/关 · ② prefix cache 关/不关 · ③ mem-fraction 或 gpu-memory-utilization 的**具体数值**
+   · ④ `readyTag` 用默认值 / 继承顶层 / 任务级自定义 · ⑤ client 是否 `--ignore-eos`
+   · ⑥ **把最终环境变量逐条复述请你确认** · ⑦ **把最终命令参数逐条复述请你确认**。
+   它们都是「结果口径」级别的开关，**光看命令文本推不出来**；选错会让整轮 8 卡任务白跑。
+   完整问法、默认建议与「为什么必须问」见下方「⚠️ 必问清单」。
+
 一次问齐，别来回拉扯；能默认的给默认值让用户确认。
+
+### ⚠️ 必问清单（7 项。用户 2026-10-10 首次裁定，2026-10-13 扩充，**不得自己拍板**）
+
+> 用 `vscode_askQuestions` **弹对话框逐条确认**，**7 项一项都不能省**。选错会让结果直接失效
+> （性能数字不可比 / 打点完全消失 / 服务等不到就绪 / 白跑一轮 8 卡），且事后再补跑成本极高。
+> 每项都要给**默认建议**（见下表），让用户确认或改口，而不是让用户从零填。
+
+| # | 必问项 | 默认建议 / 怎么问 | 为什么必须问 |
+|---|--------|------------------|-------------|
+| ① | **cudagraph 开还是关？** | **压测 / 性能测试** → 建议**开**：server 命令**不传** `--enforce-eager` / `--no-async-scheduling`（vLLM 默认就走 cudagraph）。**抓 shape / 抓 kernel 打点** → 建议**关**：加 `--enforce-eager` | 这两类的要求**正好相反**；开着 cudagraph 时 capture 之后 Python 层不再执行，打点 / `print` **全部消失**。量化依据见下方「为什么 cudagraph 必须问」 |
+| ② | **prefix cache 关还是不关？** | 建议**跟随框架默认**，但必须**显式问一次**并写进口径说明；做 A/B 对比时两边必须一致 | 两家默认不同且都**默认开**：vLLM v1 `enable_prefix_caching=True`（`vllm/config/cache.py:91`，关闭用 `--no-enable-prefix-caching`）；SGLang 的 radix cache 默认开（关闭用 `--disable-radix-cache`）。命中前缀缓存会把 TTFT / 吞吐抬得极高 ⇒ 开关不一致，两次结果**不可比**。⚠️ 参数名以**目标镜像的 `--help`** 为准 |
+| ③ | **mem-fraction / gpu-memory-utilization 取多少？** | 要用户给**具体数值**（如 SGLang `--mem-fraction-static 0.8`、vLLM `--gpu-memory-utilization 0.9`），**不要**留空走默认 | 它决定 KV cache 池大小 ⇒ 直接决定**并发上限**与会不会 OOM；共享机器上别人占用/释放会污染池预算（本工作区实测同配置三次得到 37.89 / −14.38 / 107.52 GB）。⚠️ 两家参数名不同，别混用 |
+| ④ | **`readyTag` 用默认值 / 继承顶层 / 任务级自定义？** | 三选一**显式确认**：**默认**（`Application startup complete`，vLLM 适用）/ **继承顶层**（顶层已写、任务段不写）/ **自定义**（任务段覆写，如 SGLang 的 `The server is fired up and ready to roll!`） | 匹配不到就绪，client **永远不启动、工具静默挂住**——而且工具**刻意不设等待超时**（避免大模型冷启/TileLang 编译被误杀），所以会一直挂着。⚠️ **只支持单个字符串**，写数组会在加载配置时 `ValueError`（见 §2） |
+| ⑤ | **client 是否加 `--ignore-eos`？** | 加 = 输出压满 `--output-len`（口径固定、可比）；不加 = 尊重模型自然停止（贴近真实业务、长度不定）。**两家默认值相反**：**SGLang bench 默认开启**（要自然停止得显式关掉）、**vLLM bench 默认不开启**（要压满得显式加 `--ignore-eos`） | 决定「压满固定长度」还是「自然早停」，两种口径的吞吐 / TPOT **不可比**；默认值相反还会让「两边都不写」变成**口径不一致**。vLLM 侧已核实：`--ignore-eos` 是 `store_true`（`vllm/benchmarks/serve.py:1434`）。本工作区既有配置即按此口径写：SGLang 任务**不传**、vLLM 任务**显式传**。⚠️ SGLang 侧默认值以该版本 `--help` 为准 |
+| ⑥ | **把最终环境变量逐条复述，请用户确认** | 生成后把**合并后的最终 env 列成表**发回逐条确认：顶层 `server.env` + 任务级 `env` + 容器级 `USER_ENV`（含厂商/模型开关）。有 `--dry-run` 就用它输出的 `[<task>-Server-ENV]` / `[<task>-Client-ENV]` / `[<task>-ENV:inherited]` 三行当依据 | 环境变量最常「**以为设了、其实没设**」：任务级会覆盖顶层；`su -` 会**清掉**镜像 Docker ENV 追加的目录（§7.2）；同一个变量可能同时出现在 `USER_ENV` 与 config 里（如 `MACA_SMALL_PAGESIZE_ENABLE`，§7.4 已注明两处都要一致） |
+| ⑦ | **把最终命令参数逐条复述，请用户确认** | 生成后把**渲染后的完整 server / client 命令**列出来逐条确认（至少代表性 case，最好全部 case）：参数有没有漏、`{bs}/{input}/{output}` 是否落到该落的位置、`extra_args` 是否按预期追加、字面量 `{}` 是否写成 `{{}}`。用 `--dry-run` 的输出当确认依据最省事 | `cmd` 是**整条覆盖**语义（任务级一旦给字符串就不再拼默认命令），`extra_args` 又**永远追加**在末尾 ⇒ 很容易多一个少一个参数而没人发现，跑到一半才发现口径不对 |
+
+顺带一并确认（视任务，别默认替用户决定）：
+
+- **die 编号** —— 别依赖脚本默认值；共享机器上 die 常被占满，且默认容器名可能撞掉别人的容器。
+- **是否要 `--save-result --result-dir`** —— 不加则没有每 case 的 `*.json`，结果只能从 `Client-*.log` 里翻。
+- profile 类任务**固定**关 cudagraph + 关多 stream，属已定规则，**不必问**。
+
+**为什么 cudagraph 这件事必须问（量化依据，vLLM 0.30.1.dev0 源码）**：`cudagraph_capture_sizes` 的单位是
+**token、不是请求数**，上限 = `min(max_num_seqs × (num_speculative_tokens + 1) × 2, 512)`（非 Blackwell 平台为 512）；
+列表按 `n × query_len` 生成且**只保留 `≤ 上限` 的项**。⇒ 开投机解码（γ=5 ⇒ `query_len=6`）时最多覆盖
+**n ≤ 85 个请求**，再有请求数网格（`1,2,4,8,16,…`）限制，实际最大命中 **n=80 → 480 token**；因此
+`bs ≥ 128` 的 case（768 / 1536 token）**拿不到图**、性能数字会偏低，要覆盖必须显式
+`--max-cudagraph-capture-size`。反过来，抓 shape 时开着 cudagraph，打点连执行机会都没有。
 
 ## 2. 配置心智模型（写 config 前必须理解）
 
@@ -112,10 +186,13 @@ triton 编译缓存（老版本固定名 `TritonDump` 的自动清缓存行为�
 - 顶层 `readyTag` 是全局默认，默认值 `"Application startup complete"`（vLLM 适用）。
 - 任务段内写 `readyTag` 可覆盖默认，**写在任务段这一层（与 `type` 同级），
   不是写在 `server` 里**。
-- 值可以是**字符串**，也可以是**字符串数组**（命中任意一个即视为就绪）。
+- **只支持单个字符串**（`62650ec` 起）：写数组会在**加载配置时**直接抛 `ValueError`
+  （fail loud，不会静默取第一个）。要按任务区分，就写在**任务段**里覆写顶层。
+- 取用顺序：**任务段的 `readyTag` > 顶层 `readyTag` > 默认 `Application startup complete`**。
+  ⇒ 必问项 ④ 的「默认 / 继承顶层 / 自定义」三选一，对应的就是这三种写法。
 - **等非 vLLM 服务（如基于 uvicorn 的 SGLang）就绪，靠的就是它**：不同服务的
   就绪日志不一样，别去翻源码，直接在任务段里配置与服务日志对应的关键字；
-  拿不准就多写几个放进数组兜底。
+  拿不准就把**该任务段**的那一个字符串换得更准（**不能**用数组兜底）。
 
 示例：
 
@@ -124,7 +201,7 @@ triton 编译缓存（老版本固定名 `TritonDump` 的自动清缓存行为�
 "readyTag": "Application startup complete",   // 顶层全局默认
 "sglang": {
     "type": "e2e",
-    "readyTag": ["Uvicorn running on", "The server is fired up and ready to go!"],
+    "readyTag": "The server is fired up and ready to roll!",   // 任务段覆写；⚠️ 只能单个字符串
     "bs_in_out": [[1, 1000, 16]],
     "server": { "cmd": null, "env": {}, "extra_args": [] },
     "client": { "cmd": null, "env": {}, "extra_args": [] }
@@ -140,7 +217,10 @@ triton 编译缓存（老版本固定名 `TritonDump` 的自动清缓存行为�
 
 ## 3. 生成流程
 
-1. 确认三样输入，扫描命令做第 1 节的推导，列出「推导结果 + 待确认项」给用户。
+1. 确认三样输入，扫描命令做第 1 节的推导。**同时把第 1 节第 6 条的 7 项必问清单逐条弹对话框问完**
+   （① cudagraph ② prefix cache ③ mem-fraction / gpu-util ④ `readyTag` ⑤ `--ignore-eos`
+   ⑥ 环境变量复核 ⑦ 命令参数复核），列出「推导结果 + 用户逐条确认结果」。
+   ⚠️ 7 项**不能合并成一句「还有别的要加的吗」** —— 逐条问、逐条留痕（用户 2026-10-13 要求）。
 2. 复制 `references/config_template.jsonc`，按推导结果填充：
    - 顶层 `modelPath`、`task_info`、`readyTag`（非 vLLM 服务记得改）
    - 默认 `server` / `client`（cmd + env），把会变的参数替换成 `{...}`
@@ -153,7 +233,14 @@ triton 编译缓存（老版本固定名 `TritonDump` 的自动清缓存行为�
    `xxx_env.sh`，**不**放 jsonc 的 `client.env`（理由见 §6）。
    ★ 模板已内置 **`--tag` 透传** 与 **两层 `--dry-run`**（含 `--print-user-env`，见 §4.1/§4.2），
    生成时**不要删掉**这两项能力；也不要为了省事把 `su -` 改回 `su -s /bin/bash`。
-4. 给用户一份「如何跑 + 如何回退」说明。
+4. **【回执确认，必做，不可跳过】把最终产物复述给用户并等确认**（对应必问项 ⑥ ⑦，用户 2026-10-13 要求）：
+   - **环境变量表**：合并后的最终 env（顶层 `server.env` ＋ 任务级 `env` ＋ 容器级 `USER_ENV`），
+     逐条列出，并标注每个变量"从哪来、覆盖了谁"；
+   - **命令参数**：渲染后的完整 server / client 命令（代表性 case 或全部 case），逐条列出，
+     指出哪些是固定参数、哪些随 case 变、`extra_args` 追加了什么；
+   - 有 `--dry-run` 就**先用它渲染**（不建目录、不起进程、不占卡），把它的输出当依据；
+   - 用户确认或改口后再进入下一步。**未经确认不得开跑**（一轮 8 卡任务的代价远超多问一次）。
+5. 给用户一份「如何跑 + 如何回退」说明。
 
 ## 4. 交付物
 
@@ -182,6 +269,8 @@ python "<ModelzooTool>/bin/main.py" --config "<config.jsonc>" --task <NAME> [<NA
 - 某任务失败**只记录、不中断**，后续任务继续执行；全部跑完后若有失败，以**退出码 1** 结束。
 
 ### 4.1 生成的脚本必须透传 ModelzooTool 的 CLI 参数
+
+> 每个参数的**含义与默认值**见开头「ModelzooTool 的 CLI 参数」一节；这里只讲**生成的脚本怎么透传**它们。
 
 `main.py` 的完整 CLI（`--help` 实测）：
 
@@ -337,7 +426,11 @@ docker rm -f mz-probe
   依赖 per-case 的 `{bs}{input}{output}` 的 server 参数不会逐 case 变化；需要逐 case
   独立 server 请用 `type: pair`。
 - **非 vLLM 服务卡在等待就绪**：默认 `readyTag` 是 vLLM 的日志，其他服务匹配不到会
-  一直等。按该服务自身就绪日志在任务段配 `readyTag`（数组兜底）。
+  一直等（工具**不设等待超时**，会一直挂住）。按该服务自身就绪日志在任务段配 `readyTag`
+  —— ⚠️ **只能填单个字符串**，填数组会在加载配置时 `ValueError`。
+- **⚠️ 7 项必问清单没问全就动手**：cudagraph / prefix cache / mem-fraction 或 gpu-util /
+  `readyTag` / `--ignore-eos` / 环境变量复核 / 命令参数复核 —— 漏问任何一项都可能让整轮
+  8 卡任务白跑（结果不可比、打点消失、工具挂死、口径不一致）。见 §1「⚠️ 必问清单」。
 - **抓 triton 忘开清缓存**：想要旧 `TritonDump` 的效果，任务段加
   `"cleanTritonCache": true`。
 - **client 固定命令 vs 覆盖命令**：只想改参数就用 `extra_args`，想换整条命令才写 `cmd`。
