@@ -1,6 +1,7 @@
 ---
 name: git-commit
 description: Git 提交规范。任何 git commit 前使用：msg 必须以 [refine/fix/doc/refactor/feature/test/chore/perf/build/ci] 之一开头；**msg 一律使用英文，不得出现中文（避免乱码）**；非 fix 只写一行摘要；fix 需空行后写 root cause 与 solution；一次 commit 只能有一种类型，混合必须拆成多次提交；提交前必须把 msg 交给用户审核，通过后才可提交；**所有提问（含 msg 审核）必须用 vscode_askQuestions 弹出可点击选项的对话框**，不要用纯文本提问。
+argument-hint: 一句话说明这次改了什么（用于生成待审 msg）
 ---
 
 # Git 提交规范
