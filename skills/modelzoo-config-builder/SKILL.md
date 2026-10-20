@@ -1,19 +1,95 @@
 ---
 name: modelzoo-config-builder
-description: 为 ModelzooTool 启发式生成 config.jsonc 与执行 bash 脚本。当用户想跑 vllm/推理服务的端到端压测、Profiler 或 TlasShape/BlasShape/FlashAttnShape/Triton 抓取，或提到"生成 Modelzoo config""写个跑 ModelzooTool 的脚本""server 命令 + client 命令""--task"时使用。用户只需提供环境变量、server 命令、client 命令，其余通过启发式提问与自动推导补全。⚠️ 创建任务前必须逐条弹框确认 7 项（cudagraph 开/关、prefix cache 关/不关、mem-fraction 或 gpu-memory-utilization 取值、readyTag 用默认/继承/自定义、client 是否 --ignore-eos、最终环境变量复核、最终命令参数复核），并在开跑前把最终 env 与命令复述给用户确认。
+description: 为 ModelzooTool 启发式生成 config.jsonc 与执行 bash 脚本。当用户想跑 vllm/推理服务的端到端压测、Profiler 或 TlasShape/BlasShape/FlashAttnShape/Triton 抓取，或提到"生成 Modelzoo config""写个跑 ModelzooTool 的脚本""server 命令 + client 命令""--task"时使用。⚠️ 动手前先过 §0 门禁：先问平台（NVIDIA / MetaX / 其他）；再分清脚本是 client 还是 server（不清就问）；再分清跑在宿主机还是容器——**host 必出 2 个脚本（起容器 + 容器内执行），container 只出 1 个（不管什么平台都是这条规则，与平台正交）**；执行用户/uid 只由框架脚本负责且必须问；环境变量一律进 env 不要塞进 cmd；易变值做成脚本参数；脚本一律最简，先给模板不现场验证。创建任务前还必须逐条弹框确认口径 7 项（cudagraph、prefix cache、mem-fraction/gpu-util、readyTag、--ignore-eos、env 复核、命令复核）。
 ---
 
 # ModelzooTool 配置生成器
 
 本技能把「一堆散乱的 server/client 命令」变成 ModelzooTool 可直接运行的
-`config.jsonc` + 一键执行脚本。脚本按**厂商**各一套（同一份 config 两家共用）：
-NVIDIA 用 `run_nvidia.sh` + `run_in_container_nvidia.sh`，
-MetaX（沐曦）用 `run_metax.sh` + `run_in_container_metax.sh` —— 差异与生成要点见 §7。
+`config.jsonc` + 执行脚本。
+
+**脚本数量由「跑在哪」决定，与厂商无关（二者正交）**：
+
+| 跑在哪 | 出几个脚本 | 说明 |
+|--------|-----------|------|
+| **host（宿主机）** | **2 个**：① 启动容器的脚本 + ② 在容器里执行的脚本 | 这就是 host 流程的**两个步骤，必须分开**；**宿主机不得执行应当在容器内执行的操作**，必须先起容器再 `docker exec` |
+| **container（容器内）** | **1 个**：容器内执行的脚本（即 host 形态的第 ② 个） | 不用考虑建容器 / 设备挂载 / 镜像，容器已经存在 |
+
+**为什么 host 必须拆成两个**：容器的启动与容器内执行是两件事，第 ② 个（容器内脚本）是一份**可复用的资产**——
+当现场**只有容器环境可用**时（容器已存在、别人起的、只能用 `docker exec`），**直接复用第 ② 个脚本即可，不需要新写**。
+合并成一个脚本就失去这种复用能力。
+
+厂商（NVIDIA / MetaX）只决定「起容器的参数、镜像、`USER_ENV`」——见 §7；
+**不管 NVIDIA 还是 MetaX，都先按上表定脚本数量**：host 就是起容器 + 容器内两个，container 就只要容器内那一个。
+⚠️ **设计前必须先问平台是哪个**（必问项 A0），**host 形态还要问用哪个镜像**（必问项 A2）。
+
+宿主机形态的模板：NVIDIA 用 `run_nvidia.sh`（起容器）+ `run_in_container_nvidia.sh`（容器内），
+MetaX 用 `run_metax.sh` + `run_in_container_metax.sh`。
 
 核心原则：**用户只提供三样东西 —— 环境变量、server 命令、client 命令。**
 其余字段（`modelPath`、`task_info`、`readyTag`、任务段（名字与 `type`）、
 `bs_in_out`、`extra_args`、脚本骨架）由你**先从命令里推导，再启发式补问**，
 不要一上来就让用户填 JSON。
+
+---
+
+## 0. 开工前门禁（每次动手前 30 秒过一遍）
+
+> 按「先问平台 → 定形态 → 定复杂度 → 定细节」排序，**不得跳过、不得自行拍板**。
+> 一句话记住：**先问清「哪个平台、谁的脚本、在哪跑、谁执行」，再写最简的一版；不验证，先交模板。**
+> ⚠️ **host / container 与平台无关**：任何平台都是 host 出 2 个脚本、container 出 1 个（见 §0-B）。
+
+### A. 先分清脚本是谁（client / server / 框架）
+
+| 脚本 | 职责 | 典型内容 |
+|------|------|----------|
+| **server 脚本** | 只负责起推理服务 | 一条 `vllm serve ...`（+ 少量变量） |
+| **client 脚本** | 只负责压测 / 精度评测 / 抓数据 | 一条 `lm_eval ...` / `bench serve ...` |
+| **框架脚本** | 只负责「准备容器 + 在容器里启动 ModelzooTool」 | `docker run` / `docker exec` + `main.py --config ... --task ...` |
+
+- 用户说「写个脚本」却**没说清是 client 还是 server** → **必须先问**，不要猜、不要一次给两个。
+- 识别线索：`serve` / `launch_server` / `ray start` → server；`bench` / `lm_eval` / `python xxx_test.py` → client；`docker run` / `main.py` → 框架。
+
+### B. 再分清脚本在哪跑（host / container）——**与平台无关，全平台同一规则**
+
+| 运行位置 | 需要几个脚本 | 说明 |
+|----------|-------------|------|
+| **container 内** | **只做一个** | 不用考虑创建容器 / 设备挂载 / 镜像 / 容器名；容器已存在，脚本只需把那条命令拉起来。**就是 host 形态的第 ② 个脚本**，可复用 |
+| **host（宿主机）** | **必须两个，且分两步**：① 启动容器的脚本；② 进容器后真正跑命令的脚本 | **宿主机不得执行应当在容器内执行的操作**（如 `vllm serve` / `lm_eval`）。**不要合并成一个**：分开后，只有容器可用（容器已存在 / 别人起的）时可以**直接复用第 ② 个** |
+
+- **必须问用户**：「这个脚本跑在宿主机还是容器里？」问不清就写明假设（host 两个 / container 一个）让用户确认。
+- **host 形态还必须问：用哪个镜像（IMAGE）？** 镜像跟模型/框架/厂商绑定（沐曦还要带对应 vllm_metax 版本），拿不到镜像名就先不写死、做成变量。
+- 平台（NVIDIA / MetaX）只影响「起容器的参数」，**不改变脚本个数**：宿主机上 NVIDIA 也要 `run_nvidia.sh`+`run_in_container_nvidia.sh` 两个，MetaX 也要 `run_metax.sh`+`run_in_container_metax.sh` 两个；容器内形态两家都只写一个。
+
+### C. 脚本越简单越好（硬性）
+
+- 目的只有一个：**启动 ModelzooTool**（框架脚本）或**执行那条 server/client 命令**（server/client 脚本）。
+- 默认**不**加：结果解析、汇总表格、失败重试、超时轮询、日志轮转、参数解析器、多任务编排。
+- 用户明确要才加；能一行 `exec` 解决的不要写 20 行 `if`。
+
+### D. 执行用户 / uid：只归框架脚本，且必须问
+
+- **client / server 脚本里不写**任何 `useradd` / `su` / `id -u` / uid 判断 —— 那是框架脚本的职责。
+- 框架脚本里**必须问**：执行用户 `user`、`uid`（以及要不要补 `video,root` 组），并给建议默认值。
+- 框架脚本用 `useradd -m -l -u <uid>` + `su - <user>`（§4.2）；client/server 脚本只管被调用。
+
+### E. 配置里的环境变量：进 `env`，不进 `cmd`
+
+| 情况 | 做法 |
+|------|------|
+| 固定环境变量（`MACA_*`、`HF_ENDPOINT`、`CUDA_*` …） | 写进 config 的 `server.env` / `client.env`（任务级覆盖顶层） |
+| **容易变的值**（端口、并发、条数、fewshot、输出路径） | **做成脚本参数/顶部变量**，不要当成 env 去检查，也不要写死进 cmd |
+| 需要随 case 变的值 | 用 `{bs}` / `{input}` / `{output}` / `{port}` 等魔法变量 |
+
+- 禁止 `FOO=1 bash xxx.sh` 这种把 env 塞进 `cmd` 的写法（难检索、与 `env` 重复、任务级覆盖关系看不清）。
+
+### F. 交付节奏：先模板，不验证，有疑问先问
+
+- **先交付一版最简模板**，不做现场验证（不装依赖、不起容器、不跑任务）；用户会逐步补充。
+- 不做「预防性」的复杂校验（目录检查、重试、锁、进度条）。潜在问题**先问用户**，并给出你的建议。
+- 交付时用一句话说明「哪些是假定、哪些需要用户确认」，方便后续迭代。
+
+---
 
 ## ModelzooTool 的 CLI 参数（速查 —— 写配置 / 生成脚本前先看这一节）
 
@@ -53,7 +129,7 @@ python "<ModelzooTool>/bin/main.py" --config "<config.jsonc>" --task <NAME> [<NA
 - 生成的宿主机脚本**必须能透传这些开关**（尤其 `--tag` 与两层 `--dry-run`）；
   职责划分与实现要点见 §4.1。
 
-## 0. 用户输入（只问这三样）
+## 0.1 用户输入（只问这三样）
 
 | 输入 | 说明 | 去哪 |
 |------|------|------|
@@ -107,33 +183,44 @@ triton 编译缓存（老版本固定名 `TritonDump` 的自动清缓存行为�
 3. 部署脚本参数：执行用户 `user` + `uid`、日志目录 `LOG_DIR`、工具入口 `ModelzooTool_entry_PATH`。
 4. **跑在哪家厂商（NVIDIA / MetaX）？有没有要加到 `server.env` 的平台/模型相关开关？**
    MetaX 上这类开关**直接影响性能、且与模型绑定**（不是每个模型都需要），必须问一句，别自己猜。
-   例（本工作区 DeepSeek-V4.1-Flash 实测需要）：`MACA_VLLM_ENABLE_MCTLASS_FUSED_MOE`、
+   例（具体模型需逐个确认）：`MACA_VLLM_ENABLE_MCTLASS_FUSED_MOE`、
    `MACA_VLLM_ENABLE_MCTLASS_PYTHON_API`、`MACA_SMALL_PAGESIZE_ENABLE`、`MACA_DIRECT_DISPATCH`
    —— 它们对 NVIDIA 无效但无害，所以写进共用 config、不做平台分支，详见 §7.4。
 5. 命令里含义不明的参数：不确定是"固定参数"还是"随 case 变"时，问一句，别猜。
 
-6. **【7 项必问清单】创建任何任务前，这 7 项必须逐条弹对话框问（用户 2026-10-13 要求，一项都不能省）**：
-   ① cudagraph 开/关 · ② prefix cache 关/不关 · ③ mem-fraction 或 gpu-memory-utilization 的**具体数值**
-   · ④ `readyTag` 用默认值 / 继承顶层 / 任务级自定义 · ⑤ client 是否 `--ignore-eos`
-   · ⑥ **把最终环境变量逐条复述请你确认** · ⑦ **把最终命令参数逐条复述请你确认**。
-   它们都是「结果口径」级别的开关，**光看命令文本推不出来**；选错会让整轮 8 卡任务白跑。
+6. **【必问清单】创建任何任务/脚本前必须逐条弹对话框问（形态组 + 口径组，一项都不能省）**：
+   **形态组（A0–A4）**：**平台是哪个（NVIDIA / MetaX / 其他）** · 脚本是 client / server / 框架 · 跑在 host / container · 执行用户 + uid（仅框架脚本）· 哪些易变值要做成脚本参数；
+   **口径组（①–⑦）**：cudagraph 开/关 · prefix cache 关/不关 · mem-fraction 或 gpu-memory-utilization 数值
+   · `readyTag` · client 是否 `--ignore-eos` · 最终环境变量复核 · 最终命令参数复核。
    完整问法、默认建议与「为什么必须问」见下方「⚠️ 必问清单」。
 
 一次问齐，别来回拉扯；能默认的给默认值让用户确认。
 
-### ⚠️ 必问清单（7 项。用户 2026-10-10 首次裁定，2026-10-13 扩充，**不得自己拍板**）
+### ⚠️ 必问清单（12 项 = 形态 5 项 + 口径 7 项，**不得自己拍板**）
 
-> 用 `vscode_askQuestions` **弹对话框逐条确认**，**7 项一项都不能省**。选错会让结果直接失效
-> （性能数字不可比 / 打点完全消失 / 服务等不到就绪 / 白跑一轮 8 卡），且事后再补跑成本极高。
+> 用 `vscode_askQuestions` **弹对话框逐条确认**，**12 项一项都不能省**。选错会让结果直接失效
+> （性能数字不可比 / 打点完全消失 / 服务等不到就绪 / 白跑一轮 8 卡 / 脚本数目与形态错），且事后再补成本极高。
 > 每项都要给**默认建议**（见下表），让用户确认或改口，而不是让用户从零填。
+
+**第 1 组：形态（先问，决定要生成几个文件、每个文件写什么）**
+
+| # | 必问项 | 默认建议 / 怎么问 | 为什么必须问 |
+|---|--------|------------------|-------------|
+| A0 | **跑在哪个平台（NVIDIA / MetaX / 其他）？** | 按机器名 / 驱动 / 现有镜像给建议（沐曦：`mx-smi`、`/opt/maca`；NVIDIA：`nvidia-smi`） | 平台决定起容器的设备参数、镜像、`USER_ENV`（§7）；**但不影响脚本数量**（host/container 与平台正交） |
+| A1 | **这个脚本是 client 还是 server？**（还是要「起容器 + 跑 ModelzooTool」的框架脚本） | 按命令关键词给建议（`serve`→server，`bench`/`lm_eval`→client，`docker`/`main.py`→框架）；**不清就直问** | 类型搞错 = 白写一个脚本；两者内容、位置、职责完全不同（§0-A） |
+| A2 | **脚本跑在宿主机还是容器里？**（host 还要问**用哪个镜像**） | container → **只出 1 个**（不管什么平台）；host → **出 2 个、分两步**：起容器 + 容器内执行 | 决定交付几个文件；宿主机不得执行容器内该做的操作；镜像拿不准就做成变量（§0-B） |
+| A3 | **执行用户 user + uid（属组）取多少？**（仅框架脚本需要） | 由用户给出用户名与 uid（一般与宿主执行用户一致）；属组按平台确认（如 `video` + `root`） | 产出文件属主错了宿主上打不开；`su -` 还会重置环境（§4.2） |
+| A4 | **哪些值容易变、要不要做成脚本参数？** | 端口/并发/条数/fewshot/输出目录/dataset 路径 → 做成顶部变量或 CLI 参数；固定开关 → `env` | 写死就要改脚本，当 env 检查又会到处散落（§0-E） |
+
+**第 2 组：结果口径（原 7 项，编号不变）**
 
 | # | 必问项 | 默认建议 / 怎么问 | 为什么必须问 |
 |---|--------|------------------|-------------|
 | ① | **cudagraph 开还是关？** | **压测 / 性能测试** → 建议**开**：server 命令**不传** `--enforce-eager` / `--no-async-scheduling`（vLLM 默认就走 cudagraph）。**抓 shape / 抓 kernel 打点** → 建议**关**：加 `--enforce-eager` | 这两类的要求**正好相反**；开着 cudagraph 时 capture 之后 Python 层不再执行，打点 / `print` **全部消失**。量化依据见下方「为什么 cudagraph 必须问」 |
 | ② | **prefix cache 关还是不关？** | 建议**跟随框架默认**，但必须**显式问一次**并写进口径说明；做 A/B 对比时两边必须一致 | 两家默认不同且都**默认开**：vLLM v1 `enable_prefix_caching=True`（`vllm/config/cache.py:91`，关闭用 `--no-enable-prefix-caching`）；SGLang 的 radix cache 默认开（关闭用 `--disable-radix-cache`）。命中前缀缓存会把 TTFT / 吞吐抬得极高 ⇒ 开关不一致，两次结果**不可比**。⚠️ 参数名以**目标镜像的 `--help`** 为准 |
-| ③ | **mem-fraction / gpu-memory-utilization 取多少？** | 要用户给**具体数值**（如 SGLang `--mem-fraction-static 0.8`、vLLM `--gpu-memory-utilization 0.9`），**不要**留空走默认 | 它决定 KV cache 池大小 ⇒ 直接决定**并发上限**与会不会 OOM；共享机器上别人占用/释放会污染池预算（本工作区实测同配置三次得到 37.89 / −14.38 / 107.52 GB）。⚠️ 两家参数名不同，别混用 |
+| ③ | **mem-fraction / gpu-memory-utilization 取多少？** | 要用户给**具体数值**（如 SGLang `--mem-fraction-static 0.8`、vLLM `--gpu-memory-utilization 0.9`），**不要**留空走默认 | 它决定 KV cache 池大小 ⇒ 直接决定**并发上限**与会不会 OOM；共享机器上别人占用/释放会污染池预算（同一配置多次运行，可用量可能出现几十 GB 级差异）。⚠️ 两家参数名不同，别混用 |
 | ④ | **`readyTag` 用默认值 / 继承顶层 / 任务级自定义？** | 三选一**显式确认**：**默认**（`Application startup complete`，vLLM 适用）/ **继承顶层**（顶层已写、任务段不写）/ **自定义**（任务段覆写，如 SGLang 的 `The server is fired up and ready to roll!`） | 匹配不到就绪，client **永远不启动、工具静默挂住**——而且工具**刻意不设等待超时**（避免大模型冷启/TileLang 编译被误杀），所以会一直挂着。⚠️ **只支持单个字符串**，写数组会在加载配置时 `ValueError`（见 §2） |
-| ⑤ | **client 是否加 `--ignore-eos`？** | 加 = 输出压满 `--output-len`（口径固定、可比）；不加 = 尊重模型自然停止（贴近真实业务、长度不定）。**两家默认值相反**：**SGLang bench 默认开启**（要自然停止得显式关掉）、**vLLM bench 默认不开启**（要压满得显式加 `--ignore-eos`） | 决定「压满固定长度」还是「自然早停」，两种口径的吞吐 / TPOT **不可比**；默认值相反还会让「两边都不写」变成**口径不一致**。vLLM 侧已核实：`--ignore-eos` 是 `store_true`（`vllm/benchmarks/serve.py:1434`）。本工作区既有配置即按此口径写：SGLang 任务**不传**、vLLM 任务**显式传**。⚠️ SGLang 侧默认值以该版本 `--help` 为准 |
+| ⑤ | **client 是否加 `--ignore-eos`？** | 加 = 输出压满 `--output-len`（口径固定、可比）；不加 = 尊重模型自然停止（贴近真实业务、长度不定）。**两家默认值相反**：**SGLang bench 默认开启**（要自然停止得显式关掉）、**vLLM bench 默认不开启**（要压满得显式加 `--ignore-eos`） | 决定「压满固定长度」还是「自然早停」，两种口径的吞吐 / TPOT **不可比**；默认值相反还会让「两边都不写」变成**口径不一致**。vLLM 侧已核实：`--ignore-eos` 是 `store_true`（`vllm/benchmarks/serve.py:1434`）。建议统一口径：SGLang 任务**不传**、vLLM 任务**显式传**。⚠️ SGLang 侧默认值以该版本 `--help` 为准 |
 | ⑥ | **把最终环境变量逐条复述，请用户确认** | 生成后把**合并后的最终 env 列成表**发回逐条确认：顶层 `server.env` + 任务级 `env` + 容器级 `USER_ENV`（含厂商/模型开关）。有 `--dry-run` 就用它输出的 `[<task>-Server-ENV]` / `[<task>-Client-ENV]` / `[<task>-ENV:inherited]` 三行当依据 | 环境变量最常「**以为设了、其实没设**」：任务级会覆盖顶层；`su -` 会**清掉**镜像 Docker ENV 追加的目录（§7.2）；同一个变量可能同时出现在 `USER_ENV` 与 config 里（如 `MACA_SMALL_PAGESIZE_ENABLE`，§7.4 已注明两处都要一致） |
 | ⑦ | **把最终命令参数逐条复述，请用户确认** | 生成后把**渲染后的完整 server / client 命令**列出来逐条确认（至少代表性 case，最好全部 case）：参数有没有漏、`{bs}/{input}/{output}` 是否落到该落的位置、`extra_args` 是否按预期追加、字面量 `{}` 是否写成 `{{}}`。用 `--dry-run` 的输出当确认依据最省事 | `cmd` 是**整条覆盖**语义（任务级一旦给字符串就不再拼默认命令），`extra_args` 又**永远追加**在末尾 ⇒ 很容易多一个少一个参数而没人发现，跑到一半才发现口径不对 |
 
@@ -217,32 +304,44 @@ triton 编译缓存（老版本固定名 `TritonDump` 的自动清缓存行为�
 
 ## 3. 生成流程
 
-1. 确认三样输入，扫描命令做第 1 节的推导。**同时把第 1 节第 6 条的 7 项必问清单逐条弹对话框问完**
-   （① cudagraph ② prefix cache ③ mem-fraction / gpu-util ④ `readyTag` ⑤ `--ignore-eos`
-   ⑥ 环境变量复核 ⑦ 命令参数复核），列出「推导结果 + 用户逐条确认结果」。
-   ⚠️ 7 项**不能合并成一句「还有别的要加的吗」** —— 逐条问、逐条留痕（用户 2026-10-13 要求）。
+0. **【先定形态，§0】** 逐条确认：**平台（A0）** · 脚本是 client / server / 框架 · 跑在 host / container（host→2 个脚本，container→1 个，与平台无关）· 执行用户 + uid（仅框架脚本）·
+   哪些易变值要做成参数。**未确认前不要写文件**；用户只要「先给个模板」时，按最简假设产出，并在交付说明里列明假定。
+1. 确认三样输入，扫描命令做第 1 节的推导。**同时把必问清单逐条弹对话框问完**
+   （形态 A0–A4 + 口径 ① cudagraph ② prefix cache ③ mem-fraction / gpu-util ④ `readyTag`
+   ⑤ `--ignore-eos` ⑥ 环境变量复核 ⑦ 命令参数复核），列出「推导结果 + 用户逐条确认结果」。
+   ⚠️ 不能合并成一句「还有别的要加的吗」—— 逐条问、逐条留痕。
 2. 复制 `references/config_template.jsonc`，按推导结果填充：
    - 顶层 `modelPath`、`task_info`、`readyTag`（非 vLLM 服务记得改）
    - 默认 `server` / `client`（cmd + env），把会变的参数替换成 `{...}`
    - 每个任务段都写 `type`（`e2e` 或 `pair`）；需要覆盖的 task 段落才写，
      不需要的任务段**整段删掉**（工具对缺失任务会跳过）
    - 任务级 `env` / `extra_args` / `readyTag` / `cleanTritonCache` 按需填
-3. 复制 `references/run_host_template.sh`（宿主机编排）与 `references/run_template.sh`（容器内），
-   **按目标厂商各生成一套**（`VENDOR=nvidia|metax` 分支，见 §7），填 `user` / `uid` / `configs` /
-   `ModelzooTool_entry_PATH` / `LOG_DIR` 等；外部评测工具（AISBench 等）的环境变量放它自己的
-   `xxx_env.sh`，**不**放 jsonc 的 `client.env`（理由见 §6）。
-   ★ 模板已内置 **`--tag` 透传** 与 **两层 `--dry-run`**（含 `--print-user-env`，见 §4.1/§4.2），
+3. **按形态生成脚本（§0-B）**：
+   - **容器内运行** → 只生成 **1 个**脚本（即容器内执行脚本，host 形态的第 ② 个）；
+   - **宿主机运行** → 生成 **2 个、对应两个步骤**：`references/run_host_template.sh`（① 启动容器）+ `references/run_template.sh`（② 容器内执行），
+     先问清**镜像（IMAGE）**再填；**按目标厂商各一套**（`VENDOR=nvidia|metax` 分支，见 §7），填 `user` / `uid` / `configs` /
+     `ModelzooTool_entry_PATH` / `LOG_DIR` 等；外部评测工具（AISBench 等）的环境变量放它自己的
+     `xxx_env.sh`，**不**放 jsonc 的 `client.env`（理由见 §6）。
+   - 拆两步的意义：容器内脚本可**复用**——现场只有容器可用（容器已存在/别人起的）时，直接跑第 ② 个就行。
+   - **一律保持最简**（§0-C）：不加结果汇总、重试、轮询、进度条、参数解析器。
+   ★ 框架脚本模板已内置 **`--tag` 透传** 与 **两层 `--dry-run`**（含 `--print-user-env`，见 §4.1/§4.2），
    生成时**不要删掉**这两项能力；也不要为了省事把 `su -` 改回 `su -s /bin/bash`。
-4. **【回执确认，必做，不可跳过】把最终产物复述给用户并等确认**（对应必问项 ⑥ ⑦，用户 2026-10-13 要求）：
+4. **【回执确认——仅在本次要真正开跑时做】** 把最终产物复述给用户并等确认（对应必问项 ⑥ ⑦）：
+   **若只是交付模板（§0-F），跳过 dry-run / 验证**，改为在交付说明里逐条列出「假定项 + 待用户确认项」：
    - **环境变量表**：合并后的最终 env（顶层 `server.env` ＋ 任务级 `env` ＋ 容器级 `USER_ENV`），
      逐条列出，并标注每个变量"从哪来、覆盖了谁"；
    - **命令参数**：渲染后的完整 server / client 命令（代表性 case 或全部 case），逐条列出，
      指出哪些是固定参数、哪些随 case 变、`extra_args` 追加了什么；
    - 有 `--dry-run` 就**先用它渲染**（不建目录、不起进程、不占卡），把它的输出当依据；
    - 用户确认或改口后再进入下一步。**未经确认不得开跑**（一轮 8 卡任务的代价远超多问一次）。
-5. 给用户一份「如何跑 + 如何回退」说明。
+5. 给用户一份「如何跑 + 如何回退 + 哪些是假定」的简短说明；**不做现场验证**（不装依赖、不起容器、不跑任务）。
 
 ## 4. 交付物
+
+> **先按 §0-B 定形态（与平台无关）**：容器内运行 → **只交一个脚本**（不管 NVIDIA/MetaX）；宿主机运行 → **交两个、分两步**（① 启动容器 + ② 容器内执行，**不要合并**）。
+> **host 形态先问镜像（IMAGE）**；容器内脚本是复用资产，现场只有容器可用时直接用它。
+> client/server 脚本只是「把那条命令拉起来」，**不要**塞编排逻辑；用户/uid 的切换只出现在**框架脚本**里（§4.2）。
+> 先交**最简模板**，不现场验证；潜在问题先问用户（§0-F）。
 
 | 文件 | 内容 |
 |------|------|
@@ -322,6 +421,9 @@ usage: main.py [-h] [--config CONFIG] [--tag TAG] [--task NAME [NAME ...]]
 
 ### 4.2 切用户与环境变量（`USER_ENV`）
 
+> ⚠️ **本节只适用于框架脚本**。client / server 脚本里**不要**写 `useradd` / `su` / uid 判断——
+> 执行用户由框架脚本统一负责，且 user/uid **必须问用户**（§0-D）。
+
 容器内脚本是两个阶段：**root 阶段** → `su - <user>` 切到执行用户 → 跑 `main.py`。
 
 **统一模式：把“切用户后要 export 的那一组”集中成一个 `USER_ENV`**（容器内脚本顶层定义）：
@@ -338,7 +440,7 @@ fi
 exec su - "${EXEC_USER}" -c "${USER_ENV} MODELZOO_RUN_UID='…' bash '${SELF}' ${TASKS}"
 ```
 
-硬性规则（用户 2026-09-18 定，两平台统一）：
+硬性规则（两平台统一）：
 
 - 切用户一律用 **`su - <user>`（login shell）**，**不要**用 `su -s /bin/bash <user> -c "PATH='$PATH' …"`。
 - 属组统一 **`video` + `root`**；要再加别的组（如 `/dev/mem` 需要的 `kmem`）**必须先问用户**。
@@ -349,10 +451,10 @@ exec su - "${EXEC_USER}" -c "${USER_ENV} MODELZOO_RUN_UID='…' bash '${SELF}' $
 > 为什么要有 `--print-user-env`：宿主脚本的 `--dry-run` 不经过容器内脚本（§4.1），靠它才能把
 > 「切用户后到底会 export 什么」展示出来，而且**单一来源**（不会两边不同步）。
 
-## 5. 校验（不改代码、不真跑）
+## 5. 校验（可选；只交模板时跳过，见 §0-F）
 
-生成后至少做静态校验。校验阶段**不要真的启动任务**（不跑 `--task`），只做语法与
-渲染检查：
+> 用户只要求「给个模板」时**不做任何验证**；用户要求开跑 / 要求确认能跑时，才做本节。
+> 即使做，也**不要真的启动任务**（不跑 `--task`），只做语法与渲染检查：
 
 ```bash
 # 语法：JSON5（支持 // 注释与尾随逗号）
@@ -408,7 +510,7 @@ docker rm -f mz-probe
   只对齐 **uid/gid**（保证产物属主正确）就够了 —— 正确写法见 `references/run_template.sh`：
   `useradd -m -l -u ${uid} -s /bin/bash ${user}`（`-m` 不指向任何宿主路径）。
 - **⚠️ 切用户一律用 `su - <user>`（login shell），不要用 `su -s /bin/bash <user> -c "PATH='$PATH' …"`**
-  （用户 2026-09-18 裁定，两平台统一）；属组统一 **`video` + `root`**（要再加别的组必须先问用户）；
+  （两平台统一）；属组统一 **`video` + `root`**（要再加别的组必须先问用户）；
   HOME 只对齐 uid/gid、**不迁移**（见上一条）。
   **为什么不再用非 login 写法**（实测，两个沐曦镜像）：`su -` 确实会重置 PATH，但**镜像自带的 conda
   配置在 `/etc/profile.d/`，login shell 会读** ⇒ `/opt/conda/bin` 仍在 PATH 里
@@ -428,9 +530,10 @@ docker rm -f mz-probe
 - **非 vLLM 服务卡在等待就绪**：默认 `readyTag` 是 vLLM 的日志，其他服务匹配不到会
   一直等（工具**不设等待超时**，会一直挂住）。按该服务自身就绪日志在任务段配 `readyTag`
   —— ⚠️ **只能填单个字符串**，填数组会在加载配置时 `ValueError`。
-- **⚠️ 7 项必问清单没问全就动手**：cudagraph / prefix cache / mem-fraction 或 gpu-util /
-  `readyTag` / `--ignore-eos` / 环境变量复核 / 命令参数复核 —— 漏问任何一项都可能让整轮
-  8 卡任务白跑（结果不可比、打点消失、工具挂死、口径不一致）。见 §1「⚠️ 必问清单」。
+- **⚠️ 必问清单没问全就动手**：先问**形态组**（client/server/框架 · host/container · user+uid · 易变参数），
+  再问**口径组**（cudagraph / prefix cache / mem-fraction 或 gpu-util / `readyTag` / `--ignore-eos` /
+  环境变量复核 / 命令参数复核）—— 漏问任何一项都可能让整轮 8 卡任务白跑或白写一个脚本。
+  见 §1「⚠️ 必问清单」。
 - **抓 triton 忘开清缓存**：想要旧 `TritonDump` 的效果，任务段加
   `"cleanTritonCache": true`。
 - **client 固定命令 vs 覆盖命令**：只想改参数就用 `extra_args`，想换整条命令才写 `cmd`。
@@ -456,10 +559,26 @@ docker rm -f mz-probe
   换言之 `client.env` 只留给**真正随配置变**的东西（例如只有某任务才需要的开关）；
   平台/模型相关的性能开关则相反（见 §7.4）。
 
+**脚本形态 / 复杂度相关的坑（详见 §0）**：
+
+- **没问平台 / host-container / 镜像就开始写** → 先问 A0 平台，再问 A2 跑在哪（host 还要问镜像）：容器内只需 1 个脚本，宿主机必须 2 个、分两步（① 起容器 + ② 容器内）。
+  这条**不分厂商**（NVIDIA / MetaX 同一规则）；合并成一个"全能脚本"后就无法在「只有容器可用」时复用，直接返工。
+- **在 client / server 脚本里写 `useradd` / `su` / uid 判断** → 职责越界；执行用户只由**框架脚本**负责，且必须问用户。
+- **把环境变量塞进 `cmd`（`FOO=1 bash xxx.sh`）** → 与 config 的 `env` 重复、任务级覆盖关系看不清；
+  固定变量一律写 `env`，易变值（端口/并发/条数/fewshot/输出目录）做成脚本参数或顶部变量。
+- **给 client/server 脚本堆功能**（结果汇总、重试、轮询、参数解析器）→ 偏离"只负责拉那条命令"的定位；
+  用户明确要才加。
+- **为了"验证"去装依赖 / 起容器 / 真跑任务** → 用户只要求模板时不要现场验证；
+  潜在问题先问用户并给建议（§0-F）。
+
 ## 7. 双厂商：NVIDIA / MetaX（生成的 bash 必须两家都能跑）
 
+> **先看 §0-B**：不管 NVIDIA 还是 MetaX，脚本数量规则一样——**host 两个、分两步**（① 起容器 + ② 容器内），
+> **container 一个**（直接用 ②）。下表给的是 **host 形态**两个脚本的名字；container 形态只取「容器内脚本」那一列。
+> 起容器前**必须问用户用哪个镜像**；镜像名不确定时做成 `--image` / `IMAGE` 变量，不要写死一个猜的。
+
 **同一份 `config.jsonc` 两家共用**（任务名、server/client 命令、`task_info` 都不变），
-差别只在「容器怎么起、容器里的环境怎么准备」，所以脚本按厂商各出一套。
+差别只在「容器怎么起、容器里的环境怎么准备」，所以**宿主机形态下**脚本按厂商各出一套。
 唯一会写进 config 的平台相关内容是 **MetaX 自己的性能开关**（`MACA_*` → `server.env`，见 §7.4），
 它在 NVIDIA 上被忽略、设了也无害，因此不需要平台分支。
 
@@ -499,7 +618,7 @@ export MACA_DIRECT_DISPATCH=1
 ```
 
 - **为什么必须 export**：`su -` 是 login shell，会把 Docker ENV 里追加的 `/opt/maca/*`、
-  `/opt/mxdriver/bin` 清掉（2026-09-18 实测）；而 `/opt/conda/bin` **会**保留（镜像的 conda 配置在
+  `/opt/mxdriver/bin` 清掉（实测）；而 `/opt/conda/bin` **会**保留（镜像的 conda 配置在
   `/etc/profile.d/`，login shell 会读）⇒ `python3`/`pip3`/`vllm`/`sglang` 不会丢。
 - **NVIDIA 平台没有这类专用变量** ⇒ 它的 `USER_ENV` 只需把「框架 CLI / python 所在目录」补回 PATH：
 
@@ -517,8 +636,8 @@ USER_ENV="export PATH='${_fw_dirs%:}':\$PATH;"   # 该目录本来就在 login P
 
 ### 7.3 MetaX 侧的常见坑
 
-- **镜像版本要对**：镜像必须带目标模型实现与所需参数（如 DeepSeek-V4.1 要带 `vllm_metax 0.28.0`
-  的那类），否则报 `unrecognized arguments: --engram-config`。别把镜像名写死不给退路 → 提供 `--image`。
+- **镜像版本要对**：镜像必须带目标模型实现与所需参数，否则会报 `unrecognized arguments: <某参数>`。
+  别把镜像名写死不给退路 → 提供 `--image`。
 - **`vllm --help` 报 `pymxsml.NVMLError_InvalidArgument`**：是设备没挂进容器（缺 `/dev/dri`、
   `/dev/mxcd`、`--group-add video`），不是环境变量问题。
 - **权重加载完（如 `48/48 shards`）后静默几分钟**：在编译 kernel（TileLang），不是卡死。
@@ -544,8 +663,7 @@ USER_ENV="export PATH='${_fw_dirs%:}':\$PATH;"   # 该目录本来就在 login P
 }
 ```
 
-- DeepSeek-V4.1-Flash @ MetaX **需要这 4 个**（用户 2026-09-16 确认）——可作写法模板，
-  但别的模型必须重新确认，不要照抄。
+- 上面这 4 个只是写作模板：不同模型/平台需要的开关不同，**必须按目标模型重新确认，不要照抄**。
 - **对 NVIDIA 无效但无害**：被框架忽略，不影响执行与性能 ⇒ 不做平台分支，两家共用一份 config。
 - 值写 `1`（数字）或 `"1"`（字符串）都行：ModelzooTool `_merge_env`
   （`bin/utils/command_builder.py`）会把 int/float 转成 str。
