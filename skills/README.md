@@ -65,3 +65,4 @@ rm -f ~/.agents/skills/<skill-name>
 |------|------|
 | `modelzoo-config-builder` | 为 ModelzooTool 生成 `config.jsonc` 与执行脚本（含 NVIDIA / MetaX 双厂商） |
 | `git-commit` | Git 提交规范（类型前缀、英文 msg、fix 写 root cause/solution、提交前审核） |
+| `project-knowledge-base` | 项目知识库：接手任何项目前先读/生成 `.project-kb/PROJECT_KNOWLEDGE.md` |
