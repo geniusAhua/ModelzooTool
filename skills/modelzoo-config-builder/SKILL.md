@@ -35,7 +35,7 @@ argument-hint: server 命令 + client 命令 + 环境变量（并说明平台与
 | A0 | **跑在哪个平台**（NVIDIA / MetaX / 其他）？决定容器参数、镜像、`USER_ENV` |
 | A1 | **脚本是 client / server / 框架**？不清就直问，不要猜、不要一次给两个 |
 | A2 | **跑在宿主机还是容器**？host 还要问**镜像**；host=2 个脚本，container=1 个 |
-| A3 | **执行用户 user + uid / 属组**？（仅框架脚本；client/server 脚本不写 `useradd`/`su`） |
+| A3 | **执行用户 user + uid / 属组**？（仅框架脚本；client/server 脚本不写 `useradd`/`su`）；host 形态还要定**容器名的工号后缀**（`<名字>-<工号>`） |
 | A4 | **哪些易变值做成脚本参数**？（端口、并发、条数、fewshot、输出目录） |
 
 **口径组（判断标准，一项都不能省）**

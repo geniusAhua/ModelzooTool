@@ -44,8 +44,15 @@ LOG_DIR="${WORKDIR}/output/result"            # -o 目录：结果会再落 <con
 # 执行用户（容器内按这个 uid/gid 建用户，产物属主与宿主机一致）
 RUN_UID="$(id -u)"; RUN_GID="$(id -g)"; RUN_USER="$(id -un)"
 
+# 工号 / 用户名后缀 —— 容器名必须带它（共享机器上裸名会撞掉别人的容器）
+# ⚠️ 生成时**必须问用户**填真实工号（例：m01088）；不要用 $(id -un) 猜，也不要留空
+USER_SUFFIX="${USER_SUFFIX:-<工号，例 m01088>}"
+
 # ============================== 可选参数（按需保留） =======================
-CONTAINER="${CONTAINER:-mz-run-${RUN_USER}}"
+CONTAINER="${CONTAINER:-mz-run-${USER_SUFFIX}}"
+case "${USER_SUFFIX}" in
+    ""|*"<"*) echo "[error] USER_SUFFIX 未填：容器名必须带工号后缀（例 m01088）" >&2; exit 2 ;;
+esac
 KEEP="${KEEP:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 TAG="${TAG:-}"                     # 透传给 ModelzooTool 的 --tag（结果目录名后缀）
