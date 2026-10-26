@@ -19,6 +19,16 @@
 - 用户说「写个脚本」却**没说清是 client 还是 server** → **必须先问**，不要猜、不要一次给两个。
 - 识别线索：`serve` / `launch_server` / `ray start` → server；`bench` / `lm_eval` / `python xxx_test.py` → client；`docker run` / `main.py` → 框架。
 
+#### A-0 先问：到底要不要单独写脚本？
+
+| 情况 | 做法 |
+|------|------|
+| 用户**没要求**一个可单独执行的脚本 | **不创建**：把命令直接写进 config 的 `server.cmd` / `client.cmd`，由工具原样执行 |
+| 用户**明确要求**独立脚本（多步准备、多人复用、要单独交付） | 才创建一个（同时受 A-1 / A-2 约束） |
+
+- **必须先问，不得默认生成**。多一个脚本 = 多一层间接：日志里只剩 `run: bash xxx.sh`，看不到真实命令。
+- 能不建就不建：config 里一条 `cmd` 最直接，`--dry-run` 也能直接渲染出来。
+
 #### A-1 server / client 脚本：三条硬性约束
 
 | # | 约束 |
@@ -29,6 +39,18 @@
 
 > 与框架脚本相反：框架脚本**必须**透传 `--task/--tag/--dry-run` 等 CLI（[delivery.md](./delivery.md) §4.1），
 > server / client 脚本则**不传参、不接收参数**。
+
+#### A-2 建了脚本就必须打印「最终执行的命令」（硬性）
+
+ModelzooTool 的 server/client 日志开头只记 `run: <config 里的 cmd>`（`bin/core/modelzooProcessor.py:87`）。
+若 cmd 是 `bash client.sh`，日志里就**看不到脚本内部真正执行的命令**。因此脚本必须自己把它打出来：
+
+| 要求 | 做法 |
+|------|------|
+| 打印时机 | **在执行前**（`exec` 之后就换进程了，再打也没意义） |
+| 打印方式 | 推荐 `set -x`（trace 走 stderr，工具已 `stderr=STDOUT` 合并进日志，`modelzooProcessor.py:41`）；或 `echo "+ <最终命令>"` |
+| 打印内容 | **变量已展开的真实命令**，可直接复制重跑；不要打成 `$FOO` 原样 |
+| 验收 | client 日志里能直接搜到那行命令（不依赖任何额外开关） |
 
 ### B. 再分清脚本在哪跑（host / container）——**与平台无关，全平台同一规则**
 

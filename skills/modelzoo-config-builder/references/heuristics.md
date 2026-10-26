@@ -70,7 +70,7 @@ triton 编译缓存（老版本固定名 `TritonDump` 的自动清缓存行为�
 | # | 必问项 | 默认建议 / 怎么问 | 为什么必须问 |
 |---|--------|------------------|-------------|
 | A0 | **跑在哪个平台（NVIDIA / MetaX / 其他）？** | 按机器名 / 驱动 / 现有镜像给建议（沐曦：`mx-smi`、`/opt/maca`；NVIDIA：`nvidia-smi`） | 平台决定起容器的设备参数、镜像、`USER_ENV`（[vendors.md](./vendors.md)）；**但不影响脚本数量**（host/container 与平台正交） |
-| A1 | **这个脚本是 client 还是 server？**（还是要「起容器 + 跑 ModelzooTool」的框架脚本） | 按命令关键词给建议（`serve`→server，`bench`/`lm_eval`→client，`docker`/`main.py`→框架）；**不清就直问** | 类型搞错 = 白写一个脚本；两者内容、位置、职责完全不同（[gate.md](./gate.md) §0-A） |
+| A1 | **这个脚本是 client 还是 server？**（还是要「起容器 + 跑 ModelzooTool」的框架脚本）；**还要问：是否真的需要单独脚本？用户没要求就直接写进 config** | 按命令关键词给建议（`serve`→server，`bench`/`lm_eval`→client，`docker`/`main.py`→框架）；**不清就直问** | 类型搞错 = 白写一个脚本；两者内容、位置、职责完全不同（[gate.md](./gate.md) §0-A）；默认不建脚本可避免「日志只看到 `run: bash xxx.sh`」 |
 | A2 | **脚本跑在宿主机还是容器里？**（host 还要问**用哪个镜像**） | container → **只出 1 个**（不管什么平台）；host → **出 2 个、分两步**：起容器 + 容器内执行 | 决定交付几个文件；宿主机不得执行容器内该做的操作；镜像拿不准就做成变量（[gate.md](./gate.md) §0-B） |
 | A3 | **执行用户 user + uid（属组）取多少？**（仅框架脚本需要）；host 形态还要给**容器名工号后缀** | 由用户给出用户名与 uid（一般与宿主执行用户一致）；属组按平台确认（如 `video` + `root`）；容器名固定为 `<基础名>-<工号>`（如 `mz-run-m01088`） | 产出文件属主错了宿主上打不开；`su -` 还会重置环境（[delivery.md](./delivery.md) §4.2）；**容器名共用通用名会撞掉别人的容器**（[gate.md](./gate.md) §0-G） |
 | A4 | **（仅框架脚本）哪些值容易变、要不要做成脚本参数？** | 框架脚本：端口/并发/条数/fewshot/输出目录/dataset 路径 → 顶部变量或 CLI 参数；固定开关 → `env`。**server/client 脚本不问**：一个脚本一个任务，直接写死、不传参（[gate.md](./gate.md) §0-A） | 框架脚本写死就要改脚本；server/client 加参数化会让「一个任务一个脚本」失真、代码变长 |
