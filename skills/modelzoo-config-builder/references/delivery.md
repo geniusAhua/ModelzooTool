@@ -23,8 +23,8 @@
      `ModelzooTool_entry_PATH` / `LOG_DIR` 等；外部评测工具（AISBench 等）的环境变量放它自己的
      `xxx_env.sh`，**不**放 jsonc 的 `client.env`（理由见 [pitfalls.md](./pitfalls.md)）。
    - 拆两步的意义：容器内脚本可**复用**——现场只有容器可用（容器已存在/别人起的）时，直接跑第 ② 个就行。
-   - **容器名一律 `<基础名>-<工号>`**（如 `mz-run-m01088`）：工号写进脚本顶部变量 `USER_SUFFIX`，
-     **生成时必须问用户**，未填就报错退出；`--keep` / `docker rm -f` 只能针对这个名字（[gate.md](./gate.md) §0-G）。
+   - **容器名一律 `<基础名>-$USER`**（如 `mz-run-<工号>`）：脚本顶部用 `USER_SUFFIX="${USER:-}"`，
+     **生成时仍需跟用户确认**，未填就报错退出；`--keep` / `docker rm -f` 只能针对这个名字（[gate.md](./gate.md) §0-G）。
    - **一律保持最简**（[gate.md](./gate.md) §0-C）：不加结果汇总、重试、轮询、进度条、参数解析器。
    - **server / client 脚本：一个脚本只对应一个任务** —— 命令与参数全部写死、**不接收参数、不做兼容分支**，
      代码量最小优先（用户明确要求参数化时除外）。注意与框架脚本相反：框架脚本必须透传 `--task/--tag/--dry-run`。

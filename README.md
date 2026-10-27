@@ -1,17 +1,52 @@
 # 使用说明
 
+ModelzooTool 用一份 JSON5 配置，把「server 启动命令 + client 压测/抓取命令」参数化成任务，
+按 `bs_in_out` 遍历用例批量执行，并收集日志与结果。适合 vLLM / SGLang 的端到端压测、
+Profiler、以及 TlasShape / BlasShape / FlashAttnShape / Triton 抓取。
+
+| 概念 | 说明 |
+|------|------|
+| 配置 | `--config <config.jsonc>`，JSON5（支持 `//` 注释与尾随逗号） |
+| 任务段 | 配置里的顶层对象（名字自定），必须写 `type`：`e2e` / `pair` |
+| 用例 | `bs_in_out` 里的一行 `[bs, input, output]` |
+| 入口 | `bin/main.py` |
+
 ## 命令
 
-通过 `--help` 查看命令帮助。
+通过 `python bin/main.py --help` 查看完整帮助。
 
-用 `--task` 指定要执行的任务名称（可写多个，按顺序执行），任务名称来自配置文件里自定义的任务段：
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--config <path>` | `bin/test/config.jsonc` | 要执行的 JSON5 配置；**不传时会回落到自带的示例配置**，建议总是显式指定 |
+| `--task <name> [<name> ...]` | 无（必填） | **可写多个**，按顺序执行；任务名取自配置里的自定义任务段。名字不存在时会报错并列出全部可用任务名 |
+| `-o, --output-dir <dir>` | `bin/../result` | 日志与结果根目录，不存在会自动创建 |
+| `--tag <suffix>` | 空 | 加在结果目录名末尾，用于区分同名任务的多次运行；**值为空时不要传** |
+| `--dry-run` | 关 | **只渲染并打印**每个 case 的 server/client 命令与将注入的环境变量；不建日志目录、不清 triton 缓存、不起任何进程 |
+| `--list` | 关 | 列出配置里的任务名后退出；**必须同时给 `--config`**（不会回落默认配置）；不建目录、不跑任务 |
+| `-h, --help` | — | 打印帮助 |
+
+常用示例：
 
 ```bash
+# 跑多个任务（按顺序）
 python bin/main.py --config <config.jsonc> --task profiler tlas -o <log_dir>
+
+# 先看会跑什么（零副作用，不建目录、不起进程）
+python bin/main.py --config <config.jsonc> --task profiler --dry-run
+
+# 列出配置里的任务名
+python bin/main.py --config <config.jsonc> --list
+
+# 同一任务跑多次时加 tag 区分
+python bin/main.py --config <config.jsonc> --task profiler -o <log_dir> --tag v2
 ```
 
 多个任务按 `--task` 给出的顺序依次执行；**某个任务失败不会中断后续任务**，会继续尝试剩下的任务，
 全部执行完后若有失败的任务则以非零退出码（`1`）结束（并在结尾打印失败任务名）。
+
+**结果目录**：`<output-dir>/<配置文件名>/<任务名>/<时间戳[+tag]>/`；
+`pair` 模式下每个 case 再分 `bs{bs}-in{input}-out{output}/` 子目录。
+日志文件为 `Server-*.log` / `Client-*.log`。
 
 任务类型由任务段里的 `type` 字段决定（与任务名称无关，任务名随便起）：
 
@@ -35,20 +70,44 @@ python bin/main.py --config <config.jsonc> --task profiler tlas -o <log_dir>
 ```
 
 ## config.json
-`task_info`中是自定义魔法变量，可在 命令/环境变量/额外参数 中，通过 `{}` 包起来使用对应的魔法变量值
-工具默认提供的魔法变量名称为：
-1. `__LOG_PATH__`
-    当前case的server log和client log的生成路径
-2. `__FILE_NAME__`
-    当前作业的配置文件名称
-3. `bs, input, output`
-    当前case对应的bs，input，output。由于必须提供case才能启动client，如果**client不需要这些参数值**，也可以设置一个**无意义的值**用于**占位**来正常启动client
-4. 关于`{}`使用事项
-    如果字符串中需要提供`{}`，请多加一层，写为`{{}}`,这样python可以将其正确解释为`{}`否则会认为是一个魔法变量尝试渲染
-5. 关于 server 就绪标志 `readyTag`（可选）
-    工具默认以 server 日志中出现 `Application startup complete` 作为“启动完成”信号（命中后才会启动 client）。
-    该标志可在配置中自定义：顶层写 `readyTag` 作为全局默认值，或在某个任务段内写 `readyTag` 覆盖它。
-    值只能是单个字符串（不再支持数组）。
+`task_info` 中的自定义字段，以及工具内置的变量，都可以在 **server/client 命令、环境变量、`extra_args`** 中写成 `{名称}` 引用，运行时被替换成真实值。
+
+| 变量 | 含义 |
+|------|------|
+| `{bs}` `{input}` `{output}` | 当前 case 的并发 / 输入长度 / 输出长度（来自 `bs_in_out`）。 **client 不需要这些值时也要给个占位值**，否则 client 不会启动 |
+| `{prompts}` | 工具计算：`bs × task_info.promptRatio`（默认 1） |
+| `{modelPath}` | 顶层 `modelPath` |
+| `{任意 task_info 键}` | 自定义值，例如 `{tp}` `{chunk_size}` `{port}` |
+| `{__LOG_PATH__}` | 当前 case 的 server/client 日志目录 |
+| `{__FILE_NAME__}` | 当前配置文件名（不含扩展名） |
+| `{__PORT__}` | **自动探测的可用端口**，详见下方 |
+
+### 关于 `{__PORT__}`（自动端口）
+
+- 工具在首次渲染时用 socket 向内核申请一个空闲端口，**同一任务内 server 与 client 拿到同一个值**；不同任务各自独立。
+- `--dry-run` 也会探测，并在输出里打印 `[<任务名>-PORT]: <端口>`。
+- 运行后 server/client 日志头部会多一行 `[Server-PORT] <端口>` / `[Client-PORT] <端口>`，事后可对账。
+- 与 `task_info.port`（`{port}`）**不冲突**：`{port}` 是你手写的值，`{__PORT__}` 是工具自动探测的值；不想手工改端口就用 `{__PORT__}`。
+  ```jsonc
+  {
+      "server": { "cmd": "vllm serve {modelPath} --port {__PORT__}" },
+      "client": { "cmd": "vllm bench serve --model {modelPath} --port {__PORT__}" }
+  }
+  ```
+- `pair` 模式下 case 串行执行（Client 结束后先杀 Server 再进下一个），同一任务复用同一端口是安全的。
+
+注意事项：
+
+- `bs` / `input` / `output` / `prompts` / `modelPath` / `__LOG_PATH__` / `__PORT__` / `__FILE_NAME__` 是**保留名**，即使写进 `task_info` 也会被内置值覆盖。
+- 如果字符串里需要字面量 `{}`，请多加一层写成 `{{}}`，否则会被当成魔法变量而报 `Missing`。
+
+### 关于 server 就绪标志 `readyTag`（可选）
+
+工具默认以 server 日志中出现 `Application startup complete` 作为“启动完成”信号（命中后才会启动 client）。
+该标志可在配置中自定义：顶层写 `readyTag` 作为全局默认值，或在某个任务段内写 `readyTag` 覆盖它。
+值只能是**单个字符串**（写数组会在加载配置时直接报错）。
+
+> 非 vLLM 的服务（如 SGLang）启动日志不同，必须换成它自己的就绪行，否则工具会一直等下去（**不设等待超时**）。
 
 ```jsonc
 //举例
@@ -63,6 +122,7 @@ python bin/main.py --config <config.jsonc> --task profiler tlas -o <log_dir>
     "task_info":{
         "tp": 2,
         "chunk_size": 12,
+        // 手写端口；也可以把命令里的 --port {port} 换成 --port {__PORT__}，让工具自动挑一个空闲端口
         "port": 1136
     },
     
@@ -101,7 +161,7 @@ python bin/main.py --config <config.jsonc> --task profiler tlas -o <log_dir>
         },
 
         "client": {
-            "cmd": "python /home/huitian/m01088/JoyAI/bash_file/jd_find_best_case.py -p {port} --cache --log-path {__LOG_PATH__}",
+            "cmd": "python /home/huitian/$USER/JoyAI/bash_file/jd_find_best_case.py -p {port} --cache --log-path {__LOG_PATH__}",
             "env": {},
             "extra_args": []
         }
@@ -233,7 +293,8 @@ python bin/main.py --config <config.jsonc> --task profiler tlas -o <log_dir>
 
 ***
 
-推荐的执行脚本如下：
+推荐的执行脚本如下（**最简示例**，只演示「建用户 → 切用户 → 批量跑 config」；
+容器命名要带用户名后缀、`--tag`/`--dry-run` 透传、`USER_ENV` 等完整约定：
 ```bash
 # user `id -u` to get your user_id
 # set -x
