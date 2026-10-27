@@ -64,5 +64,6 @@ rm -f ~/.agents/skills/<skill-name>
 | 技能 | 用途 |
 |------|------|
 | `modelzoo-config-builder` | 为 ModelzooTool 生成 `config.jsonc` 与执行脚本（含 NVIDIA / MetaX 双厂商） |
+| `trace-analyzer` | 分析 torch.profiler trace（支持 zip/tar.gz 等压缩包，无需解压）：算子分类耗时（大类+子类，按 prefill/decode 拆分）、整体 GPU 耗时、阶段耗时、Markdown 报告 + Excel，含对比模式；**多 case 合并为一份报告/一份 Excel（表格带 case 列）**、多 rank 先弹框选 rank（默认 rank0） |
 | `git-commit` | Git 提交规范（类型前缀、英文 msg、fix 写 root cause/solution、提交前审核） |
 | `project-knowledge-base` | 项目知识库：接手任何项目前先读/生成 `.project-kb/PROJECT_KNOWLEDGE.md` |

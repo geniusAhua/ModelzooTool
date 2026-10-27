@@ -361,6 +361,59 @@ EOF
 `skills/` 目录存放 agent 技能真身，随仓库一起评审、演进、复用；每台机器上只需在 agent 的技能目录里放一个软链接指过来。
 目录约定、`SKILL.md` 规范、安装/卸载命令、现有技能清单统一见 [`skills/README.md`](skills/README.md)。
 
+### 技能一览
+
+| 技能 | 用途 | 典型场景 |
+|------|------|----------|
+| `modelzoo-config-builder` | 启发式生成 `config.jsonc` 与执行脚本 | 端到端压测、Profiler、TlasShape / BlasShape / FlashAttnShape / Triton 抓取 |
+| `trace-analyzer` | 解析 torch.profiler trace，出算子分类与阶段耗时报告 | 算子耗时占比、prefill/decode 耗时、两次 profile 对比 |
+| `project-knowledge-base` | 维护项目内本地知识库 `.project-kb/PROJECT_KNOWLEDGE.md` | 接手 / 排查任何项目的第一步 |
+| `git-commit` | Git 提交规范 | 任何 `git commit` 之前 |
+
+#### `modelzoo-config-builder`
+
+把「server 启动命令 + client 压测/抓取命令」写进一份 JSON5 配置，本工具按 `bs_in_out` 批量执行。
+该技能负责**动手前把口径问清楚**（平台、脚本是 client 还是 server、跑在宿主机还是容器、执行用户等），
+再按模板产出配置与最简脚本。
+
+- 产物：`config.jsonc` + 执行脚本（host 场景 2 个：起容器 + 容器内执行；container 场景 1 个）
+- 建议先 `python bin/main.py --config <cfg> --task <任务名> --dry-run` 确认会跑什么
+- 细节见 `skills/modelzoo-config-builder/SKILL.md`
+
+#### `trace-analyzer`
+
+直接读取 torch.profiler 导出的 trace（`.json` / `.json.gz` / 含 trace 的 `zip`、`tar.gz`、目录，
+**无需手动解压**），统计算子（大类 + 子类）与各阶段耗时，产出 Markdown 报告 + Excel。
+
+- 口径：整体 GPU 耗时 = 全部 kernel `dur` 累加；prefill 取全部纯 prefill 段；
+  **decode 只采样最后 5 段**；阶段外 kernel 不丢；自校验「各阶段之和 == GPU 总耗时」
+- 算子大类耗时同时按 **prefill / decode** 拆分，混合段单列
+- 多个 case 一次跑完，只产出一份 md + 一份 xlsx（每张表带 `case` 列）
+- 脚本：`skills/trace-analyzer/scripts/tpa.py`
+
+```bash
+# 1) 先看有哪些 trace（多 rank 时弹框与用户确认，默认推荐 rank0）
+python skills/trace-analyzer/scripts/tpa.py list <日志目录> --json
+
+# 2) 单 case / 多 case（多 case 合并成一份报告）
+python skills/trace-analyzer/scripts/tpa.py analyze <caseA> [<caseB> ...] --outdir <输出目录>
+
+# 3) 改动前后对比（沿用原 torch_profile_analysis 的 Performance 口径）
+python skills/trace-analyzer/scripts/tpa.py compare <ctl> <exp> --outdir <输出目录>
+```
+
+#### `project-knowledge-base`
+
+强制流程：只要任务涉及某个项目，先读（没有就生成）该项目的 `.project-kb/PROJECT_KNOWLEDGE.md`，
+记录用途、目录地图、运行/调试方法，以及「翻代码很慢、但查文档/上网很快」的经验，之后随代码变化增量更新。
+知识库本身不提交（已在 `.gitignore` 中忽略）。
+
+#### `git-commit`
+
+统一提交口径：msg 必须以 `[refine/fix/doc/refactor/feature/test/chore/perf/build/ci]` 开头、
+**只用英文**、非 fix 只写一行、fix 需空行后写 `root cause` / `solution`、混合类型必须拆成多次提交、
+提交前用弹框把 msg 交给用户审核。
+
 以 `modelzoo-config-builder` 为例（在仓库根目录下执行）：
 
 ```bash
