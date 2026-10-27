@@ -9,7 +9,7 @@
 | 命令里的线索 | 推导结果 |
 |--------------|----------|
 | 模型路径（`vllm serve <PATH>` 或 `--model <PATH>`） | 顶层 `modelPath`，命令中替换为 `{modelPath}` |
-| `--port <N>` / `-p <N>` | `task_info.port`，替换为 `{port}` |
+| `--port <N>` / `-p <N>` | `task_info.port`，替换为 `{port}`；若用户不想管端口，改用 **`{__PORT__}`**（同一任务内 server/client 自动对齐） |
 | `-tp <N>` / `--tensor-parallel-size <N>` | `task_info.tp`，替换为 `{tp}` |
 | `--max-num-batched-tokens $((<N> * 1024))` 之类换算系数 | `task_info.chunk_size` |
 | `--random-input-len <N>` / `--random-output-len <N>` / `--max-concurrency <N>` | **case 变量**：改为 `{input}` / `{output}` / `{bs}` |

@@ -1,15 +1,35 @@
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional, List
 import copy
+import socket
 from core.config_parse import _Config
 
 
 class CommandBuilder:
     def __init__(self):
         self.config = _Config()
+        # 每个任务一个端口（同一任务下 server/client 共用），首次渲染时探测
+        self._task_ports: Dict[str, int] = {}
+
+    @staticmethod
+    def _pick_free_port() -> int:
+        """向内核要一个当前可用的空闲端口（绑定 0 号端口后立即释放）。"""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("", 0))
+            return int(sock.getsockname()[1])
+
+    def get_task_port(self, task_name: str) -> int:
+        """同一任务下 server/client 共用同一个端口；每个任务只探测一次。
+
+        注意：探测与释放之间理论上存在被抢占的窗口，属可接受的常见做法。
+        """
+        if task_name not in self._task_ports:
+            self._task_ports[task_name] = self._pick_free_port()
+        return self._task_ports[task_name]
 
     def _get_render_context(
         self,
+        task_name: str,
         bs: int,
         input_len: int,
         output_len: int,
@@ -30,6 +50,9 @@ class CommandBuilder:
         context["modelPath"] = str(self.config.modelPath)
 
         context["__LOG_PATH__"] = str(log_path)
+
+        # __PORT__：自动探测的可用端口，同一任务内 server/client 拿到同一个值
+        context["__PORT__"] = str(self.get_task_port(task_name))
 
         prompt_ratio = self.config.task_info.get("promptRatio", 1)
         context["prompts"] = str(bs * prompt_ratio)
@@ -95,7 +118,7 @@ class CommandBuilder:
         output_len: int,
         log_path: 'Path'
     ) -> Tuple[str, Dict[str, str]]:
-        context = self._get_render_context(bs, input_len, output_len, log_path)
+        context = self._get_render_context(task_name, bs, input_len, output_len, log_path)
 
         default_client = self.config.get_default_client()
         task_client = self.config.get_client_config(task_name)
@@ -149,7 +172,7 @@ class CommandBuilder:
         output_len: int,
         log_path: 'Path'
     ) -> Tuple[str, Dict[str, str]]:
-        context = self._get_render_context(bs, input_len, output_len, log_path)
+        context = self._get_render_context(task_name, bs, input_len, output_len, log_path)
 
         default_server = self.config.get_default_server()
         task_server = self.config.get_server_config(task_name)

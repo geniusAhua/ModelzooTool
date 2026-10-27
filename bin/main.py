@@ -70,6 +70,7 @@ def start_modelzoo(
     ready_tag: Optional[str] = None,
     server_env: Optional[dict] = None,
     client_env: Optional[dict] = None,
+    port: Optional[int] = None,
 ) -> bool:
     """
     启动 Server + Client
@@ -91,7 +92,8 @@ def start_modelzoo(
                 error_event=error_event,
                 log_path=server_log,
                 ready_tag=ready_tag if ready_tag is not None else DEFAULT_READY_TAG,
-                task_env=server_env
+                task_env=server_env,
+                port=port
             )
             server_p = Process(target=server_runner.start, daemon=True)
             server_p.start()
@@ -113,7 +115,8 @@ def start_modelzoo(
             ready_event=case_ready_event,
             error_event=error_event,
             log_path=client_log,
-            task_env=client_env
+            task_env=client_env,
+            port=port
         )
         client_p = Process(target=client_runner.start, daemon=True)
         client_p.start()
@@ -278,6 +281,9 @@ def run_task(task_name: str, out_dir: Path, log_tag: 'Optional[str]', dry_run: b
             output_len=output_len, log_path=log_path
         )
 
+        # __PORT__：本任务自动探测的端口，server/client 共用（同一 builder 内缓存）
+        task_port = builder.get_task_port(task_name)
+
         env = {**os.environ, **server_env, **client_env}
 
         # E2E 模式下，只有第一个 case 需要传 server_cmd
@@ -304,6 +310,7 @@ def run_task(task_name: str, out_dir: Path, log_tag: 'Optional[str]', dry_run: b
         print(f" [{task_name}-Server]: {server_cmd}")
         print(f" [{task_name}-Client-ENV]: {' '.join([key + '=' + value for key,value in client_env.items()]) or '<empty>'} ")
         print(f" [{task_name}-Client]: {client_cmd}")
+        print(f" [{task_name}-PORT]: {task_port}")
         print(f" [{task_name}-ENV:inherited]: {' '.join([key + '=' + value for key,value in inherited_env]) or '<empty>'} ")
         if current_server_cmd:
             print(f" Server日志 → {server_log}")
@@ -326,6 +333,7 @@ def run_task(task_name: str, out_dir: Path, log_tag: 'Optional[str]', dry_run: b
             ready_tag=ready_tag,
             server_env=server_env,
             client_env=client_env,
+            port=task_port,
         )
 
         if not success:

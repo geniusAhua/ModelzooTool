@@ -31,6 +31,8 @@
 - **`type: e2e` 的 server 只启一次**：e2e 段里的 server `extra_args` 只在首个 case 生效，
   依赖 per-case 的 `{bs}{input}{output}` 的 server 参数不会逐 case 变化；需要逐 case
   独立 server 请用 `type: pair`。
+- **`{__PORT__}` 在 `pair` 模式下沿用同一端口**：**不是问题** —— case 之间严格串行，上一个 Client
+  结束后先杀 Server 并清理，才进下一个；不要为了"换端口"额外加端口轮换逻辑。
 - **非 vLLM 服务卡在等待就绪**：默认 `readyTag` 是 vLLM 的日志，其他服务匹配不到会
   一直等（工具**不设等待超时**，会一直挂住）。按该服务自身就绪日志在任务段配 `readyTag`
   —— ⚠️ **只能填单个字符串**，填数组会在加载配置时 `ValueError`。
