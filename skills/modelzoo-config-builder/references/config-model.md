@@ -11,11 +11,18 @@
 | `{prompts}` | 工具计算 | = `bs × task_info.promptRatio`（默认 1） |
 | `{modelPath}` | 顶层 `modelPath` | 也可直接写死在命令里 |
 | `{__LOG_PATH__}` | 工具计算 | 当前 case 的日志目录，**每 case 独立** |
+| `{__PORT__}` | 工具计算 | **自动探测的可用端口**；同一任务内 server/client 拿到**同一个值**（首次渲染时探测，随后缓存） |
 | `{__FILE_NAME__}` | 工具计算 | 当前 config 文件名（不含扩展名） |
 | `{任意task_info键}` | `task_info` | 自定义魔法变量 |
 
-> 注意：`bs/input/output/prompts/modelPath/__LOG_PATH__/__FILE_NAME__` 是**保留名**，
+> 注意：`bs/input/output/prompts/modelPath/__LOG_PATH__/__PORT__/__FILE_NAME__` 是**保留名**，
 > 即使写进 `task_info` 也会被覆盖。
+>
+> `{__PORT__}` 与 `task_info.port`（即 `{port}`）不冲突：前者是自动探测值，后者是手动写死的值；
+> 需要“同一任务内 server/client 自动对齐端口”就用 `{__PORT__}`，不要两处分别写死。
+>
+> `pair` 模式同样安全：case 与任务都是**严格串行**的 —— Client 结束后先杀掉 Server 并清理，
+> 才进入下一个 case（`bin/main.py` 的 `start_modelzoo`）⇒ 同一任务复用同一端口不会冲突。
 
 **命令拼装规则**（server 与 client 同规则）：
 

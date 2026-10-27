@@ -1,6 +1,6 @@
 ---
 name: modelzoo-config-builder
-description: 为 ModelzooTool 启发式生成 config.jsonc 与执行 bash 脚本。当用户想跑 vllm / sglang 推理服务的端到端压测、Profiler 或 TlasShape/BlasShape/FlashAttnShape/Triton 抓取，或提到"生成 Modelzoo config""写个跑 ModelzooTool 的脚本""server 命令 + client 命令""--task""--dry-run"时使用。⚠️ 动手前先过门禁：先问平台（NVIDIA / MetaX / 其他）；再分清脚本是 client 还是 server（不清就问）；再分清跑在宿主机还是容器——host 必出 2 个脚本（起容器 + 容器内执行），container 只出 1 个（与平台正交）；执行用户/uid 只由框架脚本负责且必须问；环境变量一律进 env 不要塞进 cmd；易变值做成脚本参数；脚本一律最简，先给模板不现场验证。创建任务前还必须逐条弹框确认口径 12 项。
+description: 为 ModelzooTool 启发式生成 config.jsonc 与执行 bash 脚本。当用户想跑 vllm / sglang 推理服务的端到端压测、Profiler 或 TlasShape/BlasShape/FlashAttnShape/Triton 抓取，或提到"生成 Modelzoo config""写个跑 ModelzooTool 的脚本""server 命令 + client 命令""--task""--dry-run"时使用。⚠️ 动手前先过门禁：先问平台（NVIDIA / MetaX / 其他）；再分清脚本是 client 还是 server（不清就问）；再分清跑在宿主机还是容器——host 必出 2 个脚本（起容器 + 容器内执行），container 只出 1 个（与平台正交）；执行用户/uid 只由框架脚本负责且必须问；环境变量一律进 env 不要塞进 cmd；易变值做成脚本参数；脚本一律最简，先给模板不现场验证。**server/client 脚本一个脚本只对应一个任务、参数写死不传参、不做兼容适配、代码量最小；用户没要求不建单独脚本（直接写进 config），建了必须打印最终执行命令**。创建任务前还必须逐条弹框确认口径 12 项。
 argument-hint: server 命令 + client 命令 + 环境变量（并说明平台与 host/container）
 ---
 
@@ -33,10 +33,10 @@ argument-hint: server 命令 + client 命令 + 环境变量（并说明平台与
 | # | 必问项 |
 |---|--------|
 | A0 | **跑在哪个平台**（NVIDIA / MetaX / 其他）？决定容器参数、镜像、`USER_ENV` |
-| A1 | **脚本是 client / server / 框架**？不清就直问，不要猜、不要一次给两个 |
+| A1 | **脚本是 client / server / 框架**？不清就直问，不要猜、不要一次给两个；**并先问「是否真要单独脚本」——用户没要求就不建，命令直接写进 config** |
 | A2 | **跑在宿主机还是容器**？host 还要问**镜像**；host=2 个脚本，container=1 个 |
-| A3 | **执行用户 user + uid / 属组**？（仅框架脚本；client/server 脚本不写 `useradd`/`su`） |
-| A4 | **哪些易变值做成脚本参数**？（端口、并发、条数、fewshot、输出目录） |
+| A3 | **执行用户 user + uid / 属组**？（仅框架脚本；client/server 脚本不写 `useradd`/`su`）；host 形态还要定**容器名的工号后缀**（`<名字>-<工号>`） |
+| A4 | **（仅框架脚本）哪些易变值做成参数**？（端口、并发、条数、fewshot、输出目录）。server / client 脚本**不参数化**：一个脚本一个任务、直接写死 |
 
 **口径组（判断标准，一项都不能省）**
 
@@ -63,6 +63,9 @@ argument-hint: server 命令 + client 命令 + 环境变量（并说明平台与
    规则见 [config-model.md](./references/config-model.md)
    （魔法变量、`cmd` 覆盖语义、`extra_args` 追加、`readyTag` 取用顺序、`{}` 转义）。
 3. **生成脚本** —— 按形态出 1 个或 2 个，**一律最简**（不加汇总/重试/轮询/参数解析器）。
+   **server / client 脚本：一个脚本只对应一个任务** —— 参数写死、不传参、不做兼容分支、代码量最小优先；
+   **默认不建这类脚本**（命令直接写进 config 的 `cmd`），用户明确要才建；建了必须 `set -x` 打印最终命令；
+   需要验证的部分先不验证，交付后由用户检查再定。
    模板：[run_host_template.sh](./references/run_host_template.sh)（① 起容器）、
    [run_template.sh](./references/run_template.sh)（② 容器内）。
    CLI 透传与切用户规则见 [delivery.md](./references/delivery.md) §4.1 / §4.2
@@ -77,6 +80,11 @@ argument-hint: server 命令 + client 命令 + 环境变量（并说明平台与
 | `config.jsonc` | ModelzooTool 配置（JSON5），**两个厂商共用** |
 | `run_<vendor>.sh` | 宿主机：起容器 → 调容器内脚本 |
 | `run_in_container_<vendor>.sh` | 容器内：装依赖 → 建用户 → `su` 切用户 → 跑各 config |
+
+> **server / client 脚本**另算：**一个脚本只对应一个具体任务**，命令与参数写死、**不传参、不做兼容适配**，
+> 代码量最小优先（用户明确要求参数化时除外）。**用户没要求就不建单独脚本**，命令直接写进 config；
+> 一旦建了，脚本**必须打印最终执行命令**（`set -x` 即可），否则 client 日志里看不到真实命令。
+> 详见 [gate.md](./references/gate.md) §0-A。
 
 执行入口：
 

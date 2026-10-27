@@ -16,12 +16,14 @@ class ModelzooProcess():
     _ENV_KEY_PREFIXES = ("CUDA_VISIBLE_DEVICES", "MACA_", "VLLM_", "SGLANG_", "ASCEND_", "HCCL_", "NCCL_", "OMP_NUM_THREADS")
     _ENV_KEY_SUFFIXES = ("_PROXY",)
 
-    def __init__(self,role: "str", cmd: "str", env: "dict", log_path: "str", ready_event: "Event", error_event: "Event", callback: "Optional[Callable[[str], None]]" = None, task_env: "Optional[dict]" = None):
+    def __init__(self,role: "str", cmd: "str", env: "dict", log_path: "str", ready_event: "Event", error_event: "Event", callback: "Optional[Callable[[str], None]]" = None, task_env: "Optional[dict]" = None, port: "Optional[int]" = None):
         self._role = role
         self._cmd = cmd
         self._env = env
         # 本任务在 config 里配置的 env（server.env / client.env），仅用于写日志头
         self._task_env = task_env or {}
+        # 本任务自动探测的端口（__PORT__），仅用于写日志头
+        self._port = port
         self._log_path = log_path
         self._ready_event = ready_event
         self._error_event = error_event
@@ -106,6 +108,7 @@ class ModelzooProcess():
         * ``[<Role>-ENV]``：本任务在配置文件里配的 env（server.env / client.env，已按 case 渲染）
         * ``[<Role>-ENV:inherited]``：从外部继承的、与设备/框架相关的变量（如 CUDA_VISIBLE_DEVICES）
           —— 它们不在配置里，但排查问题时往往最关键。
+        * ``[<Role>-PORT]``：本任务自动探测的端口（``__PORT__``），server/client 同一任务内一致。
         """
         def _fmt(items) -> "str":
             return " ".join(f"{k}={v}" for k, v in items) if items else "<empty>"
@@ -115,8 +118,10 @@ class ModelzooProcess():
             (k, str(v)) for k, v in self._env.items()
             if self._is_env_of_interest(k) and k not in self._task_env
         )
+        port_line = f"[{self._role}-PORT] {self._port}\n" if self._port is not None else ""
         return (f"[{self._role}-ENV] {_fmt(task_items)}\n"
-                f"[{self._role}-ENV:inherited] {_fmt(inherited)}\n")
+                f"[{self._role}-ENV:inherited] {_fmt(inherited)}\n"
+                f"{port_line}")
 
 
     def _head_title_print(self):
@@ -129,8 +134,8 @@ class ModelzooProcess():
 
 
 class ServerProc(ModelzooProcess):
-    def __init__(self, cmd: "str", env: "dict", ready_event: "Event", error_event: "Event", log_path: "str", ready_tag: "str" = READY_LOG, task_env: "Optional[dict]" = None):
-        super().__init__("Server", cmd, env, log_path, ready_event, error_event, self._log_check, task_env)
+    def __init__(self, cmd: "str", env: "dict", ready_event: "Event", error_event: "Event", log_path: "str", ready_tag: "str" = READY_LOG, task_env: "Optional[dict]" = None, port: "Optional[int]" = None):
+        super().__init__("Server", cmd, env, log_path, ready_event, error_event, self._log_check, task_env, port)
         self._log_mod = "w"
         # ready_tag 只允许单个字符串，命中即认为 server 就绪
         self._ready_tag = ready_tag
@@ -146,8 +151,8 @@ class ServerProc(ModelzooProcess):
 
 
 class ClientProc(ModelzooProcess):
-    def __init__(self, cmd: "str", env: "dict", ready_event: "Event", error_event: "Event", log_path: "str", task_env: "Optional[dict]" = None):
-        super().__init__("Client", cmd, env, log_path, ready_event, error_event, None, task_env)
+    def __init__(self, cmd: "str", env: "dict", ready_event: "Event", error_event: "Event", log_path: "str", task_env: "Optional[dict]" = None, port: "Optional[int]" = None):
+        super().__init__("Client", cmd, env, log_path, ready_event, error_event, None, task_env, port)
         self._log_mod = "a"
 
 
