@@ -151,4 +151,4 @@ def load_config(yaml_path: Path | str, allowed_modules: Optional[List[str]] = No
     return _resolve_value(raw, context_stack=[])
 
 
-load_config(Path("/sw_home/m01088/tmp/batched_test/dailytest_models_C500_test.yaml"))
+load_config(Path.home() / "tmp" / "batched_test" / "dailytest_models_C500_test.yaml")

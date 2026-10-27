@@ -44,7 +44,7 @@
         },
 
         "client": {
-            "cmd": "python /metax0402/m01088/Gemma4/jd_find_best_case.py -p {port} --cache --log-path {__LOG_PATH__}",
+            "cmd": "python /metax0402/$USER/Gemma4/jd_find_best_case.py -p {port} --cache --log-path {__LOG_PATH__}",
             "env": {},
             "extra_args": []
         }

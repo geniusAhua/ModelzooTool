@@ -45,13 +45,13 @@ LOG_DIR="${WORKDIR}/output/result"            # -o 目录：结果会再落 <con
 RUN_UID="$(id -u)"; RUN_GID="$(id -g)"; RUN_USER="$(id -un)"
 
 # 工号 / 用户名后缀 —— 容器名必须带它（共享机器上裸名会撞掉别人的容器）
-# ⚠️ 生成时**必须问用户**填真实工号（例：m01088）；不要用 $(id -un) 猜，也不要留空
-USER_SUFFIX="${USER_SUFFIX:-<工号，例 m01088>}"
+# 默认取 USER 环境变量；生成时仍需跟用户确认一次；留空直接报错，不要写死工号
+USER_SUFFIX="${USER_SUFFIX:-${USER:-}}"
 
 # ============================== 可选参数（按需保留） =======================
 CONTAINER="${CONTAINER:-mz-run-${USER_SUFFIX}}"
 case "${USER_SUFFIX}" in
-    ""|*"<"*) echo "[error] USER_SUFFIX 未填：容器名必须带工号后缀（例 m01088）" >&2; exit 2 ;;
+    ""|*"<"*) echo "[error] USER_SUFFIX 为空：容器名必须带工号后缀（默认取 \$USER）" >&2; exit 2 ;;
 esac
 KEEP="${KEEP:-0}"
 DRY_RUN="${DRY_RUN:-0}"

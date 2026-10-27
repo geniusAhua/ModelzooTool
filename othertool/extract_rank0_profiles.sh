@@ -12,8 +12,8 @@
 #
 # 示例:
 #   ./extract_rank0_profiles.sh \
-#       /sw_home/m01088/workarea/JD/JoyAI/H200/ShapeInfo_log/H200-JoyAI-LLM-Flash-TP4-chunk12k/Profiler/20260828_11_41 \
-#       /sw_home/m01088/workarea/JD/JoyAI/H200/ShapeInfo_log/rank0_profiles
+#       /sw_home/$USER/workarea/JD/JoyAI/H200/ShapeInfo_log/H200-JoyAI-LLM-Flash-TP4-chunk12k/Profiler/20260828_11_41 \
+#       /sw_home/$USER/workarea/JD/JoyAI/H200/ShapeInfo_log/rank0_profiles
 #
 # 输出文件命名: {task}-{case}-rank0.pt.trace.json
 

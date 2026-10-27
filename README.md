@@ -161,7 +161,7 @@ python bin/main.py --config <config.jsonc> --task profiler -o <log_dir> --tag v2
         },
 
         "client": {
-            "cmd": "python /home/huitian/m01088/JoyAI/bash_file/jd_find_best_case.py -p {port} --cache --log-path {__LOG_PATH__}",
+            "cmd": "python /home/huitian/$USER/JoyAI/bash_file/jd_find_best_case.py -p {port} --cache --log-path {__LOG_PATH__}",
             "env": {},
             "extra_args": []
         }
