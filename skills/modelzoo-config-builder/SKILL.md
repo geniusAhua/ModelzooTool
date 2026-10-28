@@ -47,7 +47,7 @@ argument-hint: server 命令 + client 命令 + 环境变量（并说明平台与
 | ③ | mem-fraction 或 gpu-memory-utilization 的**具体数值** |
 | ④ | `readyTag`：默认 / 继承顶层 / 任务级自定义（**只支持单个字符串**） |
 | ⑤ | client 是否 `--ignore-eos`（SGLang 默认开、vLLM 默认关） |
-| ⑥ | **最终环境变量逐条复述**请用户确认 |
+| ⑥ | **最终环境变量逐条复述**请用户确认（attn / mcblas / mctlass 抓取任务必须把整张 env 表逐项发出审核） |
 | ⑦ | **最终命令参数逐条复述**请用户确认 |
 
 > 用 `vscode_askQuestions` **逐条弹框**，不能合并成一句「还有别的要加的吗」。

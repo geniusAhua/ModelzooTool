@@ -35,7 +35,8 @@
 - `env`：默认 env 与任务级 env 合并，任务级同名键覆盖默认。
 
 **client 的 `warmup`**：为 `true` 时，client 变成 `基础命令 && 基础命令+extra_args`
-（先跑一遍热身，再跑带 `--profile` 等的目标命令）。Profiler 场景常用。
+（先跑一遍热身，再跑带 `--profile` 等的目标命令）。
+**只有 profile 抓取才开**；attn / mcblas / mctlass 三类抓取**不开**（见 [vendors.md](./vendors.md) §7.6）。
 
 **`readyTag`（server 启动完成标志）**：工具靠匹配 server 日志来判断「服务已就绪、
 可以开始打流」。

@@ -101,3 +101,30 @@ USER_ENV="export PATH='${_fw_dirs%:}':\$PATH;"   # 该目录本来就在 login P
   `MACA_SMALL_PAGESIZE_ENABLE` / `MACA_DIRECT_DISPATCH` 两处都出现是正常的（一个管容器环境、
   一个管 server 进程），值保持一致即可。
 - 换模型/换平台时回头核对这一段：它属于"模型专属配置"，**不要**照抄到别的模型配置里。
+
+### 7.5 MetaX 抓取类任务的环境变量（attn / mcblas / mctlass）
+
+> 三类抓取各自依赖一组日志开关，**写进 config 的 `server.env`（任务级）**，不是容器级 `USER_ENV`。
+> ⚠️ **写进配置前，必须把下表逐条发给用户审核（必问项 ⑥），确认后才落盘/开跑。**
+> ⚠️ **这三类任务一律不开 `warmup`**（见 §7.6）。
+
+| 抓什么 | `type` | `server.env` | `server.extra_args` |
+|--------|--------|--------------|---------------------|
+| **attn**（FlashAttention / MHA） | `pair` | `MACA_LAUNCH_BLOCKING=1`<br>`MHA_LOG_ENABLE=1`<br>`MHA_PRINT_PARA="ON"`<br>`MHA_INPUT_COLLECTION="{__LOG_PATH__}/{__FILE_NAME__}-bs{bs}-in{input}-out{output}"` | `--enforce-eager` |
+| **mcblas**（MCBLAS / MCBLASLT） | `pair` | `MACA_LAUNCH_BLOCKING=1`<br>`MXLOG_LEVEL="err,MCBLAS=info,MCBLASLT=info"` | `--enforce-eager` |
+| **mctlass**（MCTLASS / MCTLASSEX） | `pair` | `MACA_LAUNCH_BLOCKING=1`<br>`MCTLASS_LOG_ENABLE="ON"`<br>`MXLOG_LEVEL="err,MCTLASSEX=debug"` | `--enforce-eager` |
+
+- `MHA_INPUT_COLLECTION` 决定 attn 打点落盘位置：用 `{__LOG_PATH__}` 保证**每 case 独立**，建议带上 `{bs}{input}{output}`（也可用固定后缀如 `-FA`）。
+- `MACA_LAUNCH_BLOCKING=1` 三类都要：同步执行才能保证打点顺序、避免丢日志。
+- 抓 shape / kernel 一律 `--enforce-eager`（关 cudagraph），否则 capture 之后 Python 层不执行，**打点全丢**。
+- 值写 `1`（数字）或 `"1"`（字符串）都行（`_merge_env` 会转成字符串）。
+
+### 7.6 `warmup` 只给 profile 抓取用
+
+`client.warmup` 为 `true` 时，client 会变成「先跑一遍热身 → 再跑带 `--profile` 的目标命令」。
+
+| 任务 | 要不要 `warmup` |
+|------|------------------|
+| **profile 抓取**（server `--profiler-config` + client `--profile`） | **要** |
+| **attn / mcblas / mctlass 三类抓取** | **不要**（多跑一遍会污染打点与耗时） |
+| e2e 压测 / 精度评测 | 不要 |
