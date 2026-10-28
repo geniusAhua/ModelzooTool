@@ -42,6 +42,9 @@
   见 [heuristics.md](./heuristics.md)「⚠️ 必问清单」。
 - **抓 triton 忘开清缓存**：想要旧 `TritonDump` 的效果，任务段加
   `"cleanTritonCache": true`。
+- **抓 attn / mcblas / mctlass 时漏了日志开关**（`MHA_*` / `MXLOG_LEVEL` / `MCTLASS_LOG_ENABLE`）→
+  跑完一场啥也没抓到；三类任务的完整 env 表见 [vendors.md](./vendors.md) §7.5，**写进配置前逐条让用户审核**。
+- **给 attn / mcblas / mctlass 开了 `warmup`** → 多跑一遍、打点与耗时被污染；`warmup` 只给 profile 抓取用（[vendors.md](./vendors.md) §7.6）。
 - **client 固定命令 vs 覆盖命令**：只想改参数就用 `extra_args`，想换整条命令才写 `cmd`。
 - **`$((...))` 不要被 JSON 转义破坏**：保持原样写进字符串即可。
 - **容器内脚本用 `su - <user> -c "<命令字符串>"` 传递**（不再用 heredoc），所以字符串里的 `$` 要
