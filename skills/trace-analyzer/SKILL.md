@@ -93,9 +93,9 @@ python <skill>/scripts/tpa.py list <input> --json
 
 | 产物 | 内容 |
 | --- | --- |
-| `<name>_report.md` | **主交付物**：整体 GPU 耗时、阶段表、大类、子类、Top 算子、口径与校验 |
-| `<name>.xlsx` | 6 个 sheet：`Summary` / `Stages` / `Classes` / `Types` / `Kernels` / `Hierarchy`（层级合计，兼容原工具风格） |
-| `<name>_summary.json` | 极小摘要（约 50 行），给 agent / 自动化用 |
+| `<name>_report.md` | **主交付物**：整体 GPU 耗时、阶段表、**「主视图」（大类 Top 12 + 每类子类 Top 3）**、Top 算子、口径与校验 |
+| `<name>.xlsx` | 6 个 sheet：`Summary` / `Stages` / **`Types`（class/type 全量明细，按耗时降序）** / `Classes` / `Kernels` / `Hierarchy`（层级合计，兼容原工具风格） |
+| `<name>_summary.json` | 极小摘要（约 50 行），给 agent / 自动化用；`classes` = **全量大类**，`top_kernels` 覆盖每个大类 |
 | 多 case 模式 | **仍然只有一份** `<stem>_report.md` + 一份 `<stem>.xlsx` + 一份 `<stem>_summary.json`；`<stem>` 默认为各输入的公共父目录名（如 `20261027_15_15+shape1027b`），可用 `--name` 覆盖 |
 | `compare` 模式 | `*_compare.md` + `*_compare.xlsx`（`Compare` sheet 沿用原项目列名与 `Performance[kernel_class\|kernel_type](%)` 口径） |
 
@@ -116,9 +116,9 @@ python <skill>/scripts/tpa.py list <input> --json
 
 | 产物 | 内容 |
 | --- | --- |
-| `<name>_report.md` | **主交付物**：整体 GPU 耗时、阶段表、大类、子类、Top 算子、口径与校验 |
-| `<name>.xlsx` | 6 个 sheet：`Summary` / `Stages` / `Classes` / `Types` / `Kernels` / `Hierarchy`（层级合计，兼容原工具风格） |
-| `<name>_summary.json` | 极小摘要（约 50 行），给 agent / 自动化用 |
+| `<name>_report.md` | **主交付物**：整体 GPU 耗时、阶段表、**「主视图」（大类 Top 12 + 每类子类 Top 3）**、Top 算子、口径与校验 |
+| `<name>.xlsx` | 6 个 sheet：`Summary` / `Stages` / **`Types`（class/type 全量明细，按耗时降序）** / `Classes` / `Kernels` / `Hierarchy`（层级合计，兼容原工具风格） |
+| `<name>_summary.json` | 极小摘要（约 50 行），给 agent / 自动化用；`classes` = **全量大类**（含 `indexer` / `mhc`），`top_kernels` 覆盖每个大类 |
 | `compare` 模式 | `*_compare.md` + `*_compare.xlsx`（`Compare` sheet 沿用原项目列名与 `Performance[kernel_class|kernel_type](%)` 口径） |
 
 ## 统计口径（报告里也会重复声明）
@@ -144,10 +144,49 @@ python <skill>/scripts/tpa.py list <input> --json
 
 ## 分类体系（简要）
 
-大类：`attention` / `gemm` / `moe` / `communication` / `norm` / `activation` / `elementwise` / `sampling` / `softmax` / `triton` / `other`
-子类示例：`attention → flash_attn | mla | kv_cache | attn_merge | paged_attn`，
-`gemm → mcblas | cublas | gemv | mctlass`，`moe → gemm | align_block | sort_tokens | topk | sum | other`，
-`communication → all_reduce | all_gather | all_to_all | send_recv | other`。
+**大类 = 实现来源，子类 = 业务**（用户 2026-10-29 口径）。报告主视图就按 `class/type` 汇报，
+这样才能直接定位到“该找哪个优化团队”。
+
+- 实现来源大类：**`torch`**（C++/CUDA 扩展，eager trace 里 cpu_op 形如 `_C::xxx`）/
+  **`triton`**（`@triton.jit`，调用栈有 `triton/runtime`）/ **`tilelang`**（`*_tilelang_kernel`）
+- 库 / 框架大类：`communication`（mccl）、`gemm`（mctlass / mcblas）、`moe`（mctlass 的 moe gemm）、
+  `attention`（flash-mla 的 sparse_attn / mla）、`sampling`、`elementwise`、`norm`、`activation`、
+  `softmax`、`other`
+
+> `indexer` / `mhc` **不再单独立大类、也不再拆多个子类**：它们的 kernel 分别属于
+> triton / torch / tilelang，统一体现在各自的 `indexer`、`mhc` 子类上
+> （`triton/indexer`、`torch/indexer`、`tilelang/mhc`、`triton/mhc`）。
+
+子类示例：
+
+- `torch → moe_sum | moe_topk | moe_align_block | moe_sort_tokens | indexer | kv_cache |
+  quant | silu_and_mul | layernorm | custom_op`
+  （`void-vllm::…` 扩展 kernel，cpu_op 为 `_C::…` / `_moe_C::…`）
+- `triton → indexer | mhc | rope | engram | kv_cache | sampling | silu | generated | other`
+  （`_fused_indexer_q_rope_int8_quant_kernel` / `int8_mqa_logits_kernel` / `topKPerRow*` 归 `indexer`；
+  `_inv_rope_kernel`、`_engram_lookup_int8_kernel`、`_gumbel_sample_kernel`、`triton_poi_fused_*`）
+- `tilelang → mhc | other`（`mhc_pre_big_fuse_with_norm_tilelang_kernel`、`mhc_post_tilelang_kernel`）
+- `attention → sparse_attn | kv_cache | mla | flash_attn | attn_merge | paged_attn`
+  （`sparse_attn` = DSv4 稀疏注意力的**本体计算**：prefill 走 `sparse_attn_global_fwd_kernel`
+  （参数类型 `SparsePrefillParams`）、decode 走 `flash_fwd_splitkv_sparse_mla_kernel`）
+- `communication → all_reduce | all_gather | all_to_all | send_recv | other`
+- `gemm → mctlass | mcblas`（**只分这两类**；`gemv` / `cublas` 并入 `mcblas`）
+- `moe → mctlass | other`（moe 的 GEMM 是 mctlass，子类也叫 `mctlass` 不叫 `gemm`；调度 kernel 归 `torch/moe_*`）
+- `sampling → topk | other`（`mbtopk` 等 aten 采样算子）
+
+> **来源块的规则必须排在最前**：`torch` / `triton` / `tilelang` 块放在 `moe` / `attention` /
+> `sampling` 之前，否则 `triton_poi_fused_*silu*` 会被 `activation` 吃掉、`void-vllm::moe::*`
+> 会被 `moe` 吃掉、`_compute_global_topk_indices_and_lens_kernel` 会被 `sampling/topk` 吃掉。
+> 而 `torch/custom_op` 的 `void-vllm::` 兜底必须放在**最后**（它只该接住没被具体子类命中的）。
+
+**呈现约定**（用户 2026-10-29 指定）：
+
+- 报告里的标题就叫「**主视图**」，结构固定为两层：
+  1. **大类 Top 12**（按总耗时降序，带占 GPU、prefill / decode 拆分）；
+  2. **每个大类下子类 Top 3**（带占本类、占 GPU、prefill / decode 的耗时与占比）。
+- Excel `Types` / `Classes` sheet 保留**全量**明细（不截断），作为主视图的下钻数据。
+- 「单算子」表在 Top N 之外**额外补齐每个大类的最佳条目**，避免小类整段缺席。
+- `--summary-json` 里 `classes` 是全量大类（`top_classes` 保留为 Top N 兼容字段）。
 
 新增/调整规则：改 `scripts/tpa.py` 顶部的 `CLASS_RULES`（顺序敏感，先命中先返回）。
 详见 `./references/classification.md`。

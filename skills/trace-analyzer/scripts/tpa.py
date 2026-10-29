@@ -58,13 +58,50 @@ ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".ta
 #   匹配对象 = 规范化后的 kernel 名（已剥离 <...> / (...) 内的模板参数）
 # ---------------------------------------------------------------------------
 CLASS_RULES: List[Tuple[str, str, Tuple[str, ...]]] = [
-    # ---- MoE 相关（含 MoE GEMM，作为一个语义大类）----
-    ("moe", "gemm", ("void-mctlass::kernel-moe", "macagemmmoe", "fused_moe_kernel",
-                      "fusedmoekernel", "moe_gemm")),
-    ("moe", "align_block", ("moe_align_block", "moalignblock")),
-    ("moe", "sort_tokens", ("count_and_sort_expert_tokens", "sort_expert")),
-    ("moe", "topk", ("single_group_topk", "moe_topk")),
-    ("moe", "sum", ("_moe_sum", "moe_sum", "moe_finalize")),
+    # ===== 第一层：先按「实现来源」分大类，业务语义放子类（用户 2026-10-29 口径）=====
+    #   tilelang / torch / triton 三大来源块放在最前，因为它们的关键词（silu、moe、topk …）
+    #   极易被业务规则错吞。
+    # ---- tilelang（tilelang/jit 编译，kernel 名多带 `_tilelang_kernel`）----
+    #   用户口径：mhc 不再拆 pre/post，统一归 `tilelang/mhc`
+    ("tilelang", "mhc", ("mhc",)),
+    ("tilelang", "other", ("tilelang",)),
+    # ---- torch 扩展（C++/CUDA 扩展；eager trace 的 cpu_op 形如 `_C::xxx`）----
+    ("torch", "moe_sum", ("moe_sum", "moe_finalize")),
+    ("torch", "moe_topk", ("topkgating", "topk_softplus_sqrt", "single_group_topk")),
+    ("torch", "moe_align_block", ("moe_align_block", "moalignblock")),
+    ("torch", "moe_sort_tokens", ("count_and_sort_expert_tokens", "sort_expert")),
+    #   用户口径：indexer 不再拆 q_quant/topk/candidate_block…，统一归 `torch/indexer`
+    ("torch", "indexer", ("topkperrow", "top_k_per_row", "cp_gather_indexer_k_quant_cache",
+                            "indexer")),
+    ("torch", "kv_cache", ("qnormrope", "qnorm_rope_kv_rope_int8_insert",
+                            "fused_deepseek_v41_qnorm")),
+    ("torch", "quant", ("dynamic_scaled_int8_quant", "scaled_int8_quant")),
+    ("torch", "silu_and_mul", ("silu_and_mul_clamp_flat", "silu_and_mul")),
+    ("torch", "layernorm", ("rms_norm_cached", "layernorm_cached", "fused_layer_norm")),
+    # ---- triton jit（`_xxx_kernel`；调用栈有 triton/runtime）----
+    #   用户口径：indexer 不拆，统一归 `triton/indexer`；mhc 同理归 `triton/mhc`
+    ("triton", "indexer", ("fused_indexer_q_rope_int8_quant",
+                             "indexer_k_norm_rope_quant_store",
+                             "int8_mqa_logits", "int8_paged_mqa_logits",
+                             "_compute_global_topk_indices_and_lens",
+                             "_compute_swa_indices_and_lens", "cooperativetopk",
+                             "persistenttopk", "_merge_dcp_topk_global", "globaltopkindices",
+                             "_candidate_flags", "_mask_candidates", "_store_candidates",
+                             "_block_scores", "select_candidate_blocks", "apply_candidate_mask",
+                             "build_paged_mqa_schedule_metadata",
+                             "maybe_gather_indexer_k", "indexer")),
+    ("triton", "mhc", ("hc_head", "mhc")),
+    ("triton", "rope", ("_inv_rope", "rope_quant_insert")),
+    ("triton", "engram", ("engram_lookup", "engram_post_wkv")),
+    ("triton", "kv_cache", ("zero_kv_blocks", "dequantize_and_gather_int8_k")),
+    ("triton", "sampling", ("gumbel",)),
+    ("triton", "silu", ("silu",)),
+    ("triton", "other", ("save_compress_norm",)),
+    ("triton", "generated", ("triton",)),
+    # ===== 第二层：非上述来源的 kernel，按业务语义归类 =====
+    # ---- MoE（mctlass 的 moe gemm；子类同样叫 mctlass，不叫 gemm）----
+    ("moe", "mctlass", ("void-mctlass::kernel-moe", "macagemmmoe", "fused_moe_kernel",
+                         "fusedmoekernel", "moe_gemm")),
     ("moe", "other", ("moe",)),
     # ---- 通信 ----
     ("communication", "all_reduce", ("allreduce", "cross_device_reduce_1stage",
@@ -73,12 +110,16 @@ CLASS_RULES: List[Tuple[str, str, Tuple[str, ...]]] = [
     ("communication", "all_to_all", ("alltoall", "all2all", "all_to_all")),
     ("communication", "send_recv", ("sendrecv", "send_recv", "broadcast")),
     ("communication", "other", ("mcclkernel", "ncclkernel", "mccl", "nccl")),
-    # ---- GEMM / GEMV ----
-    ("gemm", "gemv", ("gemvt", "gemv")),
+    # ---- GEMM（用户口径：只分两类 mcblas / mctlass；gemv、cublas 并入 mcblas）----
     ("gemm", "mctlass", ("void-mctlass::kernel-gemm", "mctlass")),
-    ("gemm", "mcblas", ("mcblas",)),
-    ("gemm", "cublas", ("cublas", "cutlass")),
+    ("gemm", "mcblas", ("mcblas", "gemvt", "gemv", "cublas", "cutlass")),
     # ---- Attention ----
+    #   sparse_attn：DSv4 稀疏注意力的**本体计算**（indexer 选完 top-k 后，只在这些 token 上做 attention）
+    #     . prefill 用 `sparse_attn_global_fwd_kernel`（参数类型 SparsePrefillParams）
+    #     . decode 用 `flash_fwd_splitkv_sparse_mla_kernel`（split-kv 版 sparse MLA）
+    #   必须先于 mla（因为名字里带 `_mla_`）。
+    ("attention", "sparse_attn", ("sparse_attn_global_fwd", "sparse_mla",
+                                  "flash_fwd_splitkv_sparse")),
     ("attention", "kv_cache", ("concat_and_cache", "reshape_and_cache", "gather_and_maybe_dequant",
                                "cache_mla", "kv_cache")),
     ("attention", "attn_merge", ("merge_attn_states", "mergeattnstates")),
@@ -103,10 +144,10 @@ CLASS_RULES: List[Tuple[str, str, Tuple[str, ...]]] = [
     # ---- Sampling ----
     ("sampling", "topk", ("mbtopk", "bitonicsort", "topk")),
     ("sampling", "other", ("sampling",)),
-    # ---- Triton ----
-    ("triton", "triton", ("triton",)),
     # ---- Softmax ----
     ("softmax", "softmax", ("softmax",)),
+    # ---- torch 扩展 kernel 的通用兜底（放在业务规则之后）----
+    ("torch", "custom_op", ("void-vllm::", "vllm::")),
 ]
 
 STAGE_ORDER = [
@@ -609,6 +650,24 @@ def top_items(d: Dict, n: int) -> List[Tuple]:
     return sorted(d.items(), key=lambda kv: -kv[1])[:n]
 
 
+def ranked_cover_classes(d: Dict, n: int) -> List[Tuple]:
+    """按耗时取 Top n；再为未进入 Top n 的大类补上其最佳条目。
+
+    目的：**保证每个大类在 Markdown 表里至少有一行**。新拆出的家族
+    （如 `indexer` / `mhc`）绝对耗时很小，只取全局 Top n 会把它们整段裁掉，
+    看上去就像它们“还在 other 里”。
+    要求 d 的 key 为元组且第 0 位是大类名（`type_us` / `kernel_us` 均满足）。
+    """
+    items = sorted(d.items(), key=lambda kv: -kv[1])
+    picked = items[:n]
+    seen = {k[0] for k, _ in picked}
+    for k, v in items[n:]:
+        if k[0] not in seen:
+            seen.add(k[0])
+            picked.append((k, v))
+    return picked
+
+
 # ---------------------------------------------------------------------------
 # 输出：Excel
 # ---------------------------------------------------------------------------
@@ -708,20 +767,34 @@ def _sheet_classes(wb, a: Analysis) -> None:
 
 
 def _sheet_types(wb, a: Analysis) -> None:
+    """主视图：大类/子类（class/type）——按总耗时降序，带 prefill/decode 拆分。
+
+    用户口径（2026-10-29）：大类=实现来源，子类=业务，找优化团队按这张表看。
+    """
     ws = wb.create_sheet("Types")
     ws.append(["kernel_class", "kernel_type", "kernel_count", "time_us", "time_ms",
-               "pct_of_class", "pct_of_gpu", "main_stage"])
-    for (cls, typ), us in sorted(a.type_us.items(), key=lambda kv: (kv[0][0], -kv[1])):
+               "pct_of_gpu", "prefill_ms", "pct_of_prefill", "decode_ms", "pct_of_decode",
+               "pd_ms", "main_stage"])
+    pre_total = a.stage_us.get("prefilling", 0.0)
+    dec_total = a.stage_us.get("decoding", 0.0)
+    for (cls, typ), us in sorted(a.type_us.items(), key=lambda kv: -kv[1]):
+        pre = a.stage_type_us.get(("prefilling", cls, typ), 0.0)
+        dec = a.stage_type_us.get(("decoding", cls, typ), 0.0)
+        pd = a.stage_type_us.get(("prefilling+decoding", cls, typ), 0.0)
         by_stage = {s: a.stage_type_us.get((s, cls, typ), 0.0) for s in a.stage_us}
         main_stage = max(by_stage.items(), key=lambda kv: kv[1])[0] if by_stage else ""
         ws.append([cls, typ, a.type_cnt[(cls, typ)], round(us, 3), round(us / 1000, 3),
-                   round(_pct(us, a.class_us[cls]), 2), round(_pct(us, a.gpu_us), 2),
-                   main_stage])
+                   round(_pct(us, a.gpu_us), 2),
+                   round(pre / 1000, 3), round(_pct(pre, pre_total), 2),
+                   round(dec / 1000, 3), round(_pct(dec, dec_total), 2),
+                   round(pd / 1000, 3), main_stage])
     ws.append(["TOTAL", "", sum(a.type_cnt.values()), round(a.gpu_us, 3),
-               round(a.gpu_us / 1000, 3), "", 100.0, ""])
+               round(a.gpu_us / 1000, 3), 100.0,
+               round(pre_total / 1000, 3), 100.0, round(dec_total / 1000, 3), 100.0,
+               round(a.stage_us.get("prefilling+decoding", 0.0) / 1000, 3), ""])
     for c in ws[ws.max_row]:
         c.fill = TOTAL_FILL
-    _style_header(ws, [22, 22, 14, 14, 14, 14, 12, 20])
+    _style_header(ws, [20, 24, 14, 14, 14, 12, 14, 14, 14, 14, 12, 20])
 
 
 def _sheet_kernels(wb, a: Analysis) -> None:
@@ -797,8 +870,8 @@ def write_excel(a: Analysis, out: Path) -> None:
     wb.remove(wb.active)
     _sheet_summary(wb, a)
     _sheet_stages(wb, a)
+    _sheet_types(wb, a)      # 主视图：class/type（实现来源 / 业务）
     _sheet_classes(wb, a)
-    _sheet_types(wb, a)
     _sheet_kernels(wb, a)
     _sheet_hierarchy(wb, a)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -877,57 +950,67 @@ def write_markdown(a: Analysis, out: Path, top: int) -> None:
              f"{_fmt_ms(a.span_us)} | 各行之和 == GPU 耗时合计 |")
     L.append("")
 
-    L.append("## 3. 算子大类耗时（prefill / decode 拆分）")
+    L.append("## 3. 主视图")
     L.append("")
-    L.append(f"- prefill 列 = `prefilling` 阶段（{len(pre_segs)} 段）内该大类的耗时")
-    L.append(f"- decode 列 = `decoding` 阶段（最后 {n} 段采样）内该大类的耗时")
+    L.append("- **大类取前 12 名**，每个大类下再列**前 3 个子类**（均按总耗时降序）")
+    L.append("- 大类 = **实现来源**（torch / triton / tilelang / 通信库…），子类 = 业务；"
+             "找优化团队看这张表")
+    L.append(f"- prefill 列 = `prefilling` 阶段（{len(pre_segs)} 段）；decode 列 = `decoding` 阶段（最后 {n} 段采样）")
+    L.append("- 完整列表（不截断）见 Excel 的 `Classes` / `Types` sheet")
     L.append("")
-    L.append("| 大类 (kernel_class) | 总耗时 (ms) | 占 GPU | prefill (ms) | 占 prefill | "
+    L.append("### 3.1 大类（Top 12）")
+    L.append("")
+    L.append("| # | 大类 (kernel_class) | 总耗时 (ms) | 占 GPU | prefill (ms) | 占 prefill | "
              "decode (ms) | 占 decode |")
-    L.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    L.append("| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
     pre_total = a.stage_us.get("prefilling", 0.0)
     dec_total = a.stage_us.get("decoding", 0.0)
-    for cls, us in top_items(a.class_us, top):
+    ranked_cls = sorted(a.class_us.items(), key=lambda kv: -kv[1])
+    for i, (cls, us) in enumerate(ranked_cls[:12], 1):
         pre, dec, _ = _class_split_us(a, cls)
-        L.append(f"| {cls} | {_fmt_ms(us)} | {_pct(us, a.gpu_us):.2f}% | "
+        L.append(f"| {i} | {cls} | {_fmt_ms(us)} | {_pct(us, a.gpu_us):.2f}% | "
                  f"{_fmt_ms(pre)} | {_pct(pre, pre_total):.2f}% | "
                  f"{_fmt_ms(dec)} | {_pct(dec, dec_total):.2f}% |")
-    others = sorted(a.class_us.items(), key=lambda kv: -kv[1])[top:]
-    if others:
-        rest = sum(v for _, v in others)
-        rest_pre = sum(_class_split_us(a, c)[0] for c, _ in others)
-        rest_dec = sum(_class_split_us(a, c)[1] for c, _ in others)
-        L.append(f"| （其余 {len(others)} 类） | {_fmt_ms(rest)} | {_pct(rest, a.gpu_us):.2f}% | "
-                 f"{_fmt_ms(rest_pre)} | {_pct(rest_pre, pre_total):.2f}% | "
-                 f"{_fmt_ms(rest_dec)} | {_pct(rest_dec, dec_total):.2f}% |")
+    if len(ranked_cls) > 12:
+        rest = sum(v for _, v in ranked_cls[12:])
+        L.append(f"| - | （其余 {len(ranked_cls) - 12} 类） | {_fmt_ms(rest)} | "
+                 f"{_pct(rest, a.gpu_us):.2f}% | - | - | - | - |")
+    L.append("")
+    L.append("### 3.2 子类（每个大类 Top 3，含占本类 / 占 GPU / prefill / decode 占比）")
+    L.append("")
+    L.append("| 大类 | 子类 (kernel_type) | 耗时 (ms) | 占本类 | 占 GPU | "
+             "prefill (ms) | 占 prefill | decode (ms) | 占 decode |")
+    L.append("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for cls, _ in ranked_cls[:12]:
+        subs = [(t, v) for (c, t), v in a.type_us.items() if c == cls]
+        subs.sort(key=lambda kv: -kv[1])
+        for j, (typ, us) in enumerate(subs[:3]):
+            head = cls if j == 0 else ""
+            pre = a.stage_type_us.get(("prefilling", cls, typ), 0.0)
+            dec = a.stage_type_us.get(("decoding", cls, typ), 0.0)
+            L.append(f"| {head} | {typ} | {_fmt_ms(us)} | {_pct(us, a.class_us[cls]):.2f}% | "
+                     f"{_pct(us, a.gpu_us):.2f}% | "
+                     f"{_fmt_ms(pre)} | {_pct(pre, pre_total):.2f}% | "
+                     f"{_fmt_ms(dec)} | {_pct(dec, dec_total):.2f}% |")
     pd_us = a.stage_us.get("prefilling+decoding", 0.0)
     if pd_us:
         L.append("")
         L.append(f"> 另有 **{_fmt_ms(pd_us)} ms**（占 GPU {_pct(pd_us, a.gpu_us):.2f}%）落在 "
                  f"`prefilling+decoding` 混合段，未计入上面 prefill / decode 两列；"
-                 f"各类在混合段内的明细见 Excel `Classes` 的 `pd_ms` 列。")
+                 f"各子类在混合段内的明细见 Excel `Types` 的 `pd_ms` 列。")
     L.append("")
 
-    L.append("## 4. 算子子类耗时（Top %d）" % top)
-    L.append("")
-    L.append("| 大类 | 子类 (kernel_type) | 耗时 (ms) | 占本类 | 占 GPU |")
-    L.append("| --- | --- | ---: | ---: | ---: |")
-    for (cls, typ), us in top_items(a.type_us, top):
-        L.append(f"| {cls} | {typ} | {_fmt_ms(us)} | {_pct(us, a.class_us[cls]):.2f}% | "
-                 f"{_pct(us, a.gpu_us):.2f}% |")
-    L.append("")
-
-    L.append("## 5. 单算子耗时（Top %d）" % top)
+    L.append(f"## 4. 单算子耗时（Top %d，每个大类至少 1 行）" % top)
     L.append("")
     L.append("| 大类 / 子类 | 算子 | 耗时 (ms) | 占 GPU | 次数 |")
     L.append("| --- | --- | ---: | ---: | ---: |")
-    for (cls, typ, nm), us in top_items(a.kernel_us, top):
+    for (cls, typ, nm), us in ranked_cover_classes(a.kernel_us, top):
         short = nm if len(nm) <= 64 else nm[:61] + "..."
         L.append(f"| {cls} / {typ} | `{short}` | {_fmt_ms(us)} | {_pct(us, a.gpu_us):.2f}% | "
                  f"{a.kernel_cnt[(cls, typ, nm)]:,} |")
     L.append("")
 
-    L.append("## 6. 统计口径与校验")
+    L.append("## 5. 统计口径与校验")
     L.append("")
     L.append("1. kernel 来源：trace 中 `cat == \"kernel\"` 的事件，耗时字段为 `dur`（微秒）。")
     L.append("2. 阶段来源：`cat == \"gpu_user_annotation\"` 且 name 以 `execute_` 开头的注解，"
@@ -968,11 +1051,15 @@ def _summary_payload(a: Analysis, top: int = 5) -> dict:
         "stages_ms": {s: round(a.stage_us[s] / 1000, 3) for s in ordered_stages(a)},
         "top_classes": [{"class": c, "ms": round(v / 1000, 3), "pct": round(_pct(v, a.gpu_us), 2)}
                         for c, v in top_items(a.class_us, top)],
+        # 大类全量输出（不做 top 截断）：indexer / mhc 这类新家族绝对值小，
+        # 截断会导致摘要里看不到它们，误以为还在 other 里。
+        "classes": [{"class": c, "ms": round(v / 1000, 3), "pct": round(_pct(v, a.gpu_us), 2)}
+                    for c, v in sorted(a.class_us.items(), key=lambda kv: -kv[1])],
         "top_kernels": [{"kernel": f"{c}/{t}/{n}",
                          "ms": round(v / 1000, 3),
                          "pct": round(_pct(v, a.gpu_us), 2),
                          "count": a.kernel_cnt[(c, t, n)]}
-                        for (c, t, n), v in top_items(a.kernel_us, top)],
+                        for (c, t, n), v in ranked_cover_classes(a.kernel_us, top)],
         "warnings": sorted(set(a.meta["warnings"])),
     }
 
@@ -1089,17 +1176,32 @@ def _b_classes(wb, analyses: List[Analysis]) -> None:
 
 
 def _b_types(wb, analyses: List[Analysis]) -> None:
+    """主视图（多 case）：大类/子类按耗时降序，带 prefill / decode / pd 拆分。"""
     ws = wb.create_sheet("Types")
     ws.append(["case", "kernel_class", "kernel_type", "kernel_count", "time_us",
-               "time_ms", "pct_of_class", "pct_of_gpu", "main_stage"])
+               "time_ms", "pct_of_gpu", "prefill_ms", "pct_of_prefill",
+               "decode_ms", "pct_of_decode", "pd_ms", "main_stage"])
     for a in analyses:
-        for (cls, typ), us in sorted(a.type_us.items(), key=lambda kv: (kv[0][0], -kv[1])):
+        pre_total = a.stage_us.get("prefilling", 0.0)
+        dec_total = a.stage_us.get("decoding", 0.0)
+        for (cls, typ), us in sorted(a.type_us.items(), key=lambda kv: -kv[1]):
+            pre = a.stage_type_us.get(("prefilling", cls, typ), 0.0)
+            dec = a.stage_type_us.get(("decoding", cls, typ), 0.0)
+            pd = a.stage_type_us.get(("prefilling+decoding", cls, typ), 0.0)
             by_stage = {s: a.stage_type_us.get((s, cls, typ), 0.0) for s in a.stage_us}
             main_stage = max(by_stage.items(), key=lambda kv: kv[1])[0] if by_stage else ""
             ws.append([a.name, cls, typ, a.type_cnt[(cls, typ)], round(us, 3),
-                       round(us / 1000, 3), round(_pct(us, a.class_us[cls]), 2),
-                       round(_pct(us, a.gpu_us), 2), main_stage])
-    _style_header(ws, [30, 22, 22, 14, 14, 14, 14, 12, 22])
+                       round(us / 1000, 3), round(_pct(us, a.gpu_us), 2),
+                       round(pre / 1000, 3), round(_pct(pre, pre_total), 2),
+                       round(dec / 1000, 3), round(_pct(dec, dec_total), 2),
+                       round(pd / 1000, 3), main_stage])
+        ws.append([a.name, "TOTAL", "", sum(a.type_cnt.values()), round(a.gpu_us, 3),
+                   round(a.gpu_us / 1000, 3), 100.0,
+                   round(pre_total / 1000, 3), 100.0, round(dec_total / 1000, 3), 100.0,
+                   round(a.stage_us.get("prefilling+decoding", 0.0) / 1000, 3), ""])
+        for c in ws[ws.max_row]:
+            c.fill = TOTAL_FILL
+    _style_header(ws, [28, 18, 26, 14, 14, 14, 12, 14, 14, 14, 14, 12, 22])
 
 
 def _b_kernels(wb, analyses: List[Analysis]) -> None:
@@ -1178,8 +1280,8 @@ def write_batch_excel(analyses: List[Analysis], out: Path) -> None:
     wb.remove(wb.active)
     _b_summary(wb, analyses)
     _b_stages(wb, analyses)
+    _b_types(wb, analyses)     # 主视图：class/type（实现来源 / 业务）
     _b_classes(wb, analyses)
-    _b_types(wb, analyses)
     _b_kernels(wb, analyses)
     _b_hierarchy(wb, analyses)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -1241,18 +1343,41 @@ def write_batch_markdown(analyses: List[Analysis], out: Path, top: int) -> None:
                  f"**100%** | 之和 == GPU 耗时合计 |")
         L.append("")
 
-        L.append(f"**算子大类（Top {top}，prefill / decode 拆分）**")
+        L.append("**主视图：大类（Top 12）**")
         L.append("")
-        L.append("| 大类 | 总耗时 (ms) | 占 GPU | prefill (ms) | 占 prefill | "
+        L.append("| # | 大类 | 总耗时 (ms) | 占 GPU | prefill (ms) | 占 prefill | "
                  "decode (ms) | 占 decode |")
-        L.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+        L.append("| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
         pre_total = a.stage_us.get("prefilling", 0.0)
         dec_total = a.stage_us.get("decoding", 0.0)
-        for cls, us in top_items(a.class_us, top):
+        ranked_cls = sorted(a.class_us.items(), key=lambda kv: -kv[1])
+        for i, (cls, us) in enumerate(ranked_cls[:12], 1):
             pre, dec, _ = _class_split_us(a, cls)
-            L.append(f"| {cls} | {_fmt_ms(us)} | {_pct(us, a.gpu_us):.2f}% | "
+            L.append(f"| {i} | {cls} | {_fmt_ms(us)} | {_pct(us, a.gpu_us):.2f}% | "
                      f"{_fmt_ms(pre)} | {_pct(pre, pre_total):.2f}% | "
                      f"{_fmt_ms(dec)} | {_pct(dec, dec_total):.2f}% |")
+        if len(ranked_cls) > 12:
+            rest = sum(v for _, v in ranked_cls[12:])
+            L.append(f"| - | （其余 {len(ranked_cls) - 12} 类） | {_fmt_ms(rest)} | "
+                     f"{_pct(rest, a.gpu_us):.2f}% | - | - | - | - |")
+        L.append("")
+
+        L.append("**主视图：子类（每个大类 Top 3，含占本类 / 占 GPU / prefill / decode 占比）**")
+        L.append("")
+        L.append("| 大类 | 子类 | 耗时 (ms) | 占本类 | 占 GPU | "
+                 "prefill (ms) | 占 prefill | decode (ms) | 占 decode |")
+        L.append("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+        for cls, _ in ranked_cls[:12]:
+            subs = [(t, v) for (c, t), v in a.type_us.items() if c == cls]
+            subs.sort(key=lambda kv: -kv[1])
+            for j, (typ, us) in enumerate(subs[:3]):
+                head = cls if j == 0 else ""
+                pre = a.stage_type_us.get(("prefilling", cls, typ), 0.0)
+                dec = a.stage_type_us.get(("decoding", cls, typ), 0.0)
+                L.append(f"| {head} | {typ} | {_fmt_ms(us)} | {_pct(us, a.class_us[cls]):.2f}% | "
+                         f"{_pct(us, a.gpu_us):.2f}% | "
+                         f"{_fmt_ms(pre)} | {_pct(pre, pre_total):.2f}% | "
+                         f"{_fmt_ms(dec)} | {_pct(dec, dec_total):.2f}% |")
         pd_us = a.stage_us.get("prefilling+decoding", 0.0)
         if pd_us:
             L.append(f"\n> 本 case 另有 **{_fmt_ms(pd_us)} ms**（占 GPU "
@@ -1260,20 +1385,11 @@ def write_batch_markdown(analyses: List[Analysis], out: Path, top: int) -> None:
                      f"未计入上述 prefill / decode 两列。")
         L.append("")
 
-        L.append(f"**算子子类（Top {top}）**")
-        L.append("")
-        L.append("| 大类 | 子类 | 耗时 (ms) | 占本类 | 占 GPU |")
-        L.append("| --- | --- | ---: | ---: | ---: |")
-        for (cls, typ), us in top_items(a.type_us, top):
-            L.append(f"| {cls} | {typ} | {_fmt_ms(us)} | {_pct(us, a.class_us[cls]):.2f}% | "
-                     f"{_pct(us, a.gpu_us):.2f}% |")
-        L.append("")
-
-        L.append(f"**单算子（Top {top}）**")
+        L.append(f"**单算子（Top {top}，每个大类至少 1 行）**")
         L.append("")
         L.append("| 大类/子类 | 算子 | 耗时 (ms) | 占 GPU | 次数 |")
         L.append("| --- | --- | ---: | ---: | ---: |")
-        for (cls, typ, nm), us in top_items(a.kernel_us, top):
+        for (cls, typ, nm), us in ranked_cover_classes(a.kernel_us, top):
             short = nm if len(nm) <= 56 else nm[:53] + "..."
             L.append(f"| {cls}/{typ} | `{short}` | {_fmt_ms(us)} | "
                      f"{_pct(us, a.gpu_us):.2f}% | {a.kernel_cnt[(cls, typ, nm)]:,} |")
