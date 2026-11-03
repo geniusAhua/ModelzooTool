@@ -1,0 +1,29 @@
+{
+    // 最小示例：server.cmd 只做 gateway 探活并打印 readyTag，
+    // ModelzooTool 看到 readyTag 后才启动 client.cmd。
+    // $BUNDLE_DIR 由部署包入口导出；这里用 $VAR，不要写 ${VAR}——
+    // 花括号会被 ModelzooTool 当占位符渲染。
+    "modelPath": "/path/to/model",
+
+    "readyTag": "GATEWAY-READY",
+
+    "task_info": {},
+
+    "server": {
+        "cmd": "bash \"$BUNDLE_DIR/config/wait_gateway.sh\" \"$GATEWAY_HOST\" \"$GATEWAY_PORT\"",
+        "env": {}
+    },
+
+    "client": {
+        "cmd": "bash \"$BUNDLE_DIR/config/run_client.sh\"",
+        "env": {}
+    },
+
+    // e2e：整个任务只起一次 server，串行跑完所有 case
+    "pd_e2e": {
+        "type": "e2e",
+        "bs_in_out": [
+            [0, 0, 0]
+        ]
+    }
+}
