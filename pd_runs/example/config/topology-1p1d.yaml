@@ -1,0 +1,65 @@
+# PD 分离最小示例：1 台 P 机 + 1 台 D 机（D 机上 2 个 decode 实例）。
+# 这是模板，不是可直接运行的文件：模型路径、GPU、脚本名都要换成本机环境。
+# launcher 与真实服务脚本在部署包里，见 pd_runs/README.md。
+version: 1
+
+run:
+  dir: "${BUNDLE_DIR}/pd-run"
+  heartbeat: 10
+
+defaults:
+  model_path: "/path/to/model"
+
+coordinator: p0
+
+nodes:
+  p0:
+    ip: auto
+    instances:
+      - name: prefill
+        kind: prefill
+        gpus: "0,1,2,3"
+        port: 9292
+        bootstrap_port: 8988
+        # 换成实际 prefill 脚本；端口一律用 $PORT/$BOOTSTRAP_PORT
+        cmd: 'bash "$BUNDLE_DIR/tools/prefill.sh" 0.0.0.0 "$PORT" "$BOOTSTRAP_PORT"'
+        cwd: "${RUN_DIR}/cwd/${NODE_ID}/prefill"
+        log: "p0_prefill_${TS}.log"
+
+  d0:
+    ip: auto
+    env:
+      LLM_LOCAL_IP: "$NODE_IP"
+    instances:
+      - name: decode0
+        kind: decode
+        gpus: "0,1,2,3"
+        port: 9392
+        dist_init_port: 5000
+        cmd: 'bash "$BUNDLE_DIR/tools/decode.sh" 0.0.0.0 "$PORT" "$DIST_INIT_PORT"'
+        # 服务没有 /health 时，改用 health_path 或 ready_delay
+        cwd: "${RUN_DIR}/cwd/${NODE_ID}/decode0"
+        log: "d0_decode0_${TS}.log"
+
+      - name: decode1
+        kind: decode
+        gpus: "4,5,6,7"
+        port: 9394
+        dist_init_port: 6000
+        cmd: 'bash "$BUNDLE_DIR/tools/decode.sh" 0.0.0.0 "$PORT" "$DIST_INIT_PORT"'
+        cwd: "${RUN_DIR}/cwd/${NODE_ID}/decode1"
+        log: "d0_decode1_${TS}.log"
+
+router:
+  node: p0            # 必须等于 coordinator
+  host: auto
+  port: 8001
+  log: "router_${TS}.log"
+
+client:
+  mode: modelzoo
+  runs: 3             # 导出为 NUM_RUNS
+  modelzoo:
+    config: "${BUNDLE_DIR}/config/pd.jsonc"
+    task: pd_e2e
+    out: "${RUN_DIR}/logs"
